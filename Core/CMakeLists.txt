@@ -1,5 +1,5 @@
 
-add_executable(Core WIN32 "Main.cpp" "Window.cpp" "App.cpp" "DirectXIncludes.h" "GraphicsErrorHandling.cpp" "DX12Renderer.cpp" "DX12Renderer.h")
+add_executable(Core WIN32 "Main.cpp" "Window.cpp" "App.cpp" "DirectXIncludes.h" "GraphicsErrorHandling.cpp" "DX12Renderer.cpp" "DX12Renderer.h" "GPUResource.cpp" "DX12AbstractionUtils.h")
 
 # Set debug directory to the same as the output directory for MSVC compilers.
 set_property(TARGET Core PROPERTY VS_DEBUGGER_WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

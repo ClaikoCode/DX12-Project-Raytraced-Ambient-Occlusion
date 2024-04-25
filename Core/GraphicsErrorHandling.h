@@ -33,3 +33,7 @@ namespace ErrorHandling
 	// The function then checks the HR value and throws an exception if it failed.
 	void operator>>(HrCatcher catcher, HrPasserTag);
 }
+
+// This macro is to be used in all scenarios where an HR value is returned from a function.
+static ErrorHandling::HrPasserTag HR_PASSER_TAG;
+#define CHK_HR HR_PASSER_TAG
