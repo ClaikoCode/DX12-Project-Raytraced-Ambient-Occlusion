@@ -1,0 +1,37 @@
+# CMake pattern for compiling shaders with properties (inspired from: https://stackoverflow.com/questions/71299716/how-to-compile-hlsl-shaders-during-build-with-cmake)
+
+add_custom_target(Shaders)
+
+# Macro to set shader type properties
+macro(set_shader_properties SHADER_LIST SHADER_TYPE)
+    set_source_files_properties(${SHADER_LIST} PROPERTIES ShaderType ${SHADER_TYPE})
+endmacro()
+
+# Set shader files
+set(HLSL_VERTEX_SHADERS VertexShader.hlsl)
+set(HLSL_PIXEL_SHADERS PixelShader.hlsl)
+
+# Set shade type properties
+set_shader_properties(${HLSL_VERTEX_SHADERS} "vs")
+set_shader_properties(${HLSL_PIXEL_SHADERS} "ps")
+
+# Combine all shader files
+set(HLSL_SHADER_FILES ${HLSL_VERTEX_SHADERS} ${HLSL_PIXEL_SHADERS})
+
+# Set all shaders to ShaderModel 5.1
+set_source_files_properties(${HLSL_SHADER_FILES} PROPERTIES ShaderModel "5_1")
+
+# Compile all shaders
+foreach(FILE ${HLSL_SHADER_FILES})
+  get_filename_component(FILE_WE ${FILE} NAME_WE)
+  get_source_file_property(shadertype ${FILE} ShaderType)
+  get_source_file_property(shadermodel ${FILE} ShaderModel)
+  add_custom_command(
+        TARGET Shaders
+        COMMAND fxc.exe /nologo /Emain /T${shadertype}_${shadermodel} $<IF:$<CONFIG:DEBUG>,/Od,/O1> /Zi /Fo ${CMAKE_BINARY_DIR}/${FILE_WE}.cso /Fd ${CMAKE_BINARY_DIR}/${FILE_WE}.pdb ${FILE}
+        MAIN_DEPENDENCY ${FILE}
+        COMMENT "HLSL ${FILE}"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        VERBATIM
+  )
+endforeach(FILE)
