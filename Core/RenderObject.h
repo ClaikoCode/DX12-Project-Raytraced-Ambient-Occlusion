@@ -1,9 +1,12 @@
 #pragma once
 
-#include "DirectXIncludes.h"
 #include <vector>
 
+#include "DirectXIncludes.h"
+#include "GPUResource.h"
+
 using Microsoft::WRL::ComPtr;
+using DX12Abstractions::GPUResource;
 
 struct DrawArgs
 {
@@ -19,8 +22,8 @@ struct DrawArgs
 
 struct RenderObject
 {
-	ComPtr<ID3D12Resource> vertexBuffer = nullptr;
-	ComPtr<ID3D12Resource> indexBuffer = nullptr;
+	GPUResource vertexBuffer;
+	GPUResource indexBuffer;
 	D3D12_VERTEX_BUFFER_VIEW vertexBufferView = {};
 	D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
 

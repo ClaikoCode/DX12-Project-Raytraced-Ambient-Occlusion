@@ -53,8 +53,8 @@ void NonIndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Non
 	commandList->RSSetViewports(1, &args.viewport);
 	commandList->RSSetScissorRects(1, &args.scissorRect);
 
-	// Set render target.
-	commandList->OMSetRenderTargets(1, &args.renderTargetView, TRUE, nullptr);
+	// Set render target and depth stencil.
+	commandList->OMSetRenderTargets(1, &args.renderTargetView, TRUE, &args.depthStencilView);
 
 	static float t = 0;
 	t += 1 / 144.0f;
@@ -102,8 +102,8 @@ void IndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Indexe
 	commandList->RSSetViewports(1, &args.viewport);
 	commandList->RSSetScissorRects(1, &args.scissorRect);
 
-	// Set render target.
-	commandList->OMSetRenderTargets(1, &args.renderTargetView, TRUE, nullptr);
+	// Set render target and depth stencil.
+	commandList->OMSetRenderTargets(1, &args.renderTargetView, TRUE, &args.depthStencilView);
 
 	static float t = 0;
 	t += 1 / 144.0f;

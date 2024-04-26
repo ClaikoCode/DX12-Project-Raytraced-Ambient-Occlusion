@@ -66,6 +66,9 @@ void DX12Renderer::Render()
 		m_rtvDescriptorSize
 	);
 
+	// Get DSV handle.
+	const CD3DX12_CPU_DESCRIPTOR_HANDLE dsv(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
+
 	// Reset command list and command allocator.
 	m_commandAllocator->Reset() >> CHK_HR;
 	mainThreadCommandListPre->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
@@ -97,6 +100,16 @@ void DX12Renderer::Render()
 			float clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
 			mainThreadCommandListPre->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
 		}
+
+		// Clear depth buffer.
+		mainThreadCommandListPre->ClearDepthStencilView(
+			dsv,
+			D3D12_CLEAR_FLAG_DEPTH,
+			1.0f,
+			0,
+			0,
+			nullptr
+		);
 
 		mainThreadCommandListPre->Close();
 
@@ -136,6 +149,7 @@ void DX12Renderer::Render()
 				// Add state args.
 				args.renderObject = triangleObject;
 				args.renderTargetView = rtv;
+				args.depthStencilView = dsv;
 				args.rootSignature = m_rootSignature;
 				args.viewport = m_viewport;
 				args.scissorRect = m_scissorRect;
@@ -158,6 +172,7 @@ void DX12Renderer::Render()
 				// Add state args.
 				args.renderObject = cubeObject;
 				args.renderTargetView = rtv;
+				args.depthStencilView = dsv;
 				args.rootSignature = m_rootSignature;
 				args.viewport = m_viewport;
 				args.scissorRect = m_scissorRect;
@@ -259,9 +274,10 @@ void DX12Renderer::InitPipeline()
 
 #if defined(_DEBUG)
 		// Enables debug layer.
-		ComPtr<ID3D12Debug> debugController;
+		ComPtr<ID3D12Debug1> debugController;
 		D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)) >> CHK_HR;
 		debugController->EnableDebugLayer();
+		debugController->SetEnableGPUBasedValidation(true);
 
 		// Additional debug layer options.
 		dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
@@ -392,6 +408,47 @@ void DX12Renderer::InitPipeline()
 			NAME_D3D12_OBJECT_INDEXED(m_renderTargets, i);
 		}
 	}
+
+	// Create depth buffer.
+	{
+		const CD3DX12_RESOURCE_DESC depthBufferDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+			DXGI_FORMAT_D32_FLOAT,
+			m_width,
+			m_height,
+			1, 0, 1, 0,
+			D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
+		);
+
+		const D3D12_CLEAR_VALUE depthOptimizedClearValue = {
+			.Format = DXGI_FORMAT_D32_FLOAT,
+			.DepthStencil = { 1.0f, 0 }
+		};
+
+		m_depthBuffer = CreateResource(m_device, depthBufferDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_HEAP_TYPE_DEFAULT);
+	
+		NAME_D3D12_OBJECT(m_depthBuffer);
+	}
+
+	// Create DSV descriptor heap.
+	{
+		const D3D12_DESCRIPTOR_HEAP_DESC dsvDescriptorHeapDesc = {
+			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+			.NumDescriptors = 1,
+			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+			.NodeMask = 0
+		};
+
+		m_device->CreateDescriptorHeap(&dsvDescriptorHeapDesc, IID_PPV_ARGS(&m_dsvHeap)) >> CHK_HR;
+
+		NAME_D3D12_OBJECT(m_dsvHeap);
+	}
+
+	// Create DSV.
+	{
+		CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
+
+		m_device->CreateDepthStencilView(m_depthBuffer.Get(), nullptr, dsvHandle);
+	}
 }
 
 void DX12Renderer::InitAssets()
@@ -458,6 +515,7 @@ void DX12Renderer::InitAssets()
 			CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimtiveTopology;
 			CD3DX12_PIPELINE_STATE_STREAM_VS VS;
 			CD3DX12_PIPELINE_STATE_STREAM_PS PS;
+			CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
 			CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
 		} pipelineStateStream;
 
@@ -478,6 +536,7 @@ void DX12Renderer::InitAssets()
 		pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
 		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
+		pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 		pipelineStateStream.RTVFormats = {
 			.RTFormats = { DXGI_FORMAT_R8G8B8A8_UNORM },
 			.NumRenderTargets = 1
@@ -561,6 +620,7 @@ void DX12Renderer::InitAssets()
 
 		// Copy data from upload buffer into vertex buffer.
 		commandList->CopyResource(triangleObject.vertexBuffer.Get(), vertexUploadBuffer.Get());
+		triangleObject.vertexBuffer.TransitionTo(D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, commandList);
 
 		// Close when done.
 		commandList->Close() >> CHK_HR;
@@ -575,7 +635,7 @@ void DX12Renderer::InitAssets()
 		// Create vertex buffer view.
 		auto& vbView = triangleObject.vertexBufferView;
 		{
-			vbView.BufferLocation = triangleObject.vertexBuffer->GetGPUVirtualAddress();
+			vbView.BufferLocation = triangleObject.vertexBuffer.resource->GetGPUVirtualAddress();
 			vbView.StrideInBytes = sizeof(Vertex);
 			vbView.SizeInBytes = vertexBufferSize;
 		}
@@ -633,6 +693,7 @@ void DX12Renderer::InitAssets()
 
 			// Copy data from upload buffer into index buffer.
 			commandList->CopyResource(cube.vertexBuffer.Get(), vertexUploadBuffer.Get());
+			cube.vertexBuffer.TransitionTo(D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, commandList);
 
 			// Close when done.
 			commandList->Close() >> CHK_HR;
@@ -648,7 +709,7 @@ void DX12Renderer::InitAssets()
 			// Create vertex buffer view.
 			auto& vbView = cube.vertexBufferView;
 			{
-				vbView.BufferLocation = cube.vertexBuffer->GetGPUVirtualAddress();
+				vbView.BufferLocation = cube.vertexBuffer.resource->GetGPUVirtualAddress();
 				vbView.StrideInBytes = sizeof(Vertex);
 				vbView.SizeInBytes = vertexBufferSize;
 			}
@@ -691,6 +752,7 @@ void DX12Renderer::InitAssets()
 
 			// Copy data from upload buffer into index buffer.
 			commandList->CopyResource(cube.indexBuffer.Get(), indexUploadBuffer.Get());
+			cube.indexBuffer.TransitionTo(D3D12_RESOURCE_STATE_INDEX_BUFFER, commandList);
 
 			// Close when done.
 			commandList->Close() >> CHK_HR;
@@ -706,7 +768,7 @@ void DX12Renderer::InitAssets()
 			// Create index buffer view.
 			auto& ibView = cube.indexBufferView;
 			{
-				ibView.BufferLocation = cube.indexBuffer->GetGPUVirtualAddress();
+				ibView.BufferLocation = cube.indexBuffer.resource->GetGPUVirtualAddress();
 				ibView.Format = DXGI_FORMAT_R32_UINT;
 				ibView.SizeInBytes = sizeof(cubeIndices);
 			}

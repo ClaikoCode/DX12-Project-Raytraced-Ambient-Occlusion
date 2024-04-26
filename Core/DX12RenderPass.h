@@ -14,8 +14,6 @@ using DX12Abstractions::GPUResource;
 typedef std::array<ComPtr<ID3D12CommandAllocator>, NumContexts> CommandAllocators;
 typedef std::array<ComPtr<ID3D12GraphicsCommandList>, NumContexts> CommandLists;
 
-
-
 class DX12RenderPass
 {
 public:
@@ -41,6 +39,7 @@ public:
 	{
 		RenderObject renderObject;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE renderTargetView;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE depthStencilView;
 		ComPtr<ID3D12RootSignature> rootSignature;
 		CD3DX12_VIEWPORT viewport;
 		CD3DX12_RECT scissorRect;
@@ -63,6 +62,7 @@ public:
 	{
 		RenderObject renderObject;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE renderTargetView;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE depthStencilView;
 		ComPtr<ID3D12RootSignature> rootSignature;
 		CD3DX12_VIEWPORT viewport;
 		CD3DX12_RECT scissorRect;

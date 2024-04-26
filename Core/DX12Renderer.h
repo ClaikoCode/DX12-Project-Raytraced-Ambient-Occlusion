@@ -60,6 +60,10 @@ private:
 	UINT m_rtvDescriptorSize;
 	std::array<DX12Abstractions::GPUResource, BufferCount> m_renderTargets;
 
+	ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
+	ComPtr<ID3D12Resource> m_depthBuffer;
+	
+
 	std::unordered_map<RenderPassType, std::unique_ptr<DX12RenderPass>> m_renderPasses;
 	ComPtr<ID3D12RootSignature> m_rootSignature;
 
