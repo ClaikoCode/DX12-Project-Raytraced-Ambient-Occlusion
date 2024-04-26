@@ -5,6 +5,7 @@
 
 #include "GPUResource.h"
 #include "AppDefines.h"
+#include "RenderObject.h"
 
 using namespace Microsoft::WRL;
 using namespace DirectX;
@@ -13,12 +14,7 @@ using DX12Abstractions::GPUResource;
 typedef std::array<ComPtr<ID3D12CommandAllocator>, NumContexts> CommandAllocators;
 typedef std::array<ComPtr<ID3D12GraphicsCommandList>, NumContexts> CommandLists;
 
-struct DrawArgs
-{
-	UINT vertexCount;
-	UINT startVertex;
-	UINT startInstance;
-};
+
 
 class DX12RenderPass
 {
@@ -38,25 +34,44 @@ protected:
 
 };
 
-class TriangleRenderPass : public DX12RenderPass
+class NonIndexedRenderPass : public DX12RenderPass
 {
 public:
-	struct TriangleRenderPassArgs
+	struct NonIndexedRenderPassArgs
 	{
-		D3D12_VERTEX_BUFFER_VIEW vertexBufferView;
+		RenderObject renderObject;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE renderTargetView;
 		ComPtr<ID3D12RootSignature> rootSignature;
 		CD3DX12_VIEWPORT viewport;
 		CD3DX12_RECT scissorRect;
 
 		XMMATRIX viewProjectionMatrix;
-
-		std::vector<DrawArgs> drawArgs;
 	};
 
-	TriangleRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState);
-	~TriangleRenderPass() = default;
+	NonIndexedRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState) 
+		: DX12RenderPass(device, pipelineState) {}
 
-	void Render(UINT context, ComPtr<ID3D12Device> device, TriangleRenderPassArgs args);
 
+	void Render(UINT context, ComPtr<ID3D12Device> device, NonIndexedRenderPassArgs args);
+
+};
+
+class IndexedRenderPass : public DX12RenderPass
+{
+public:
+	struct IndexedRenderPassArgs
+	{
+		RenderObject renderObject;
+		CD3DX12_CPU_DESCRIPTOR_HANDLE renderTargetView;
+		ComPtr<ID3D12RootSignature> rootSignature;
+		CD3DX12_VIEWPORT viewport;
+		CD3DX12_RECT scissorRect;
+
+		XMMATRIX viewProjectionMatrix;
+	};
+
+	IndexedRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
+		: DX12RenderPass(device, pipelineState) {}
+
+	void Render(UINT context, ComPtr<ID3D12Device> device, IndexedRenderPassArgs args);
 };

@@ -46,12 +46,13 @@ namespace DX12Abstractions
 	{
 		GPUResource resource(resourceState);
 
-		const CD3DX12_HEAP_PROPERTIES heapProps(heapType);
-		device->CreateCommittedResource(
+		const CD3DX12_HEAP_PROPERTIES heapProps{ heapType };
+		device->CreateCommittedResource1(
 			&heapProps,
 			D3D12_HEAP_FLAG_NONE,
 			&resourceDesc,
 			resourceState,
+			nullptr,
 			nullptr,
 			IID_PPV_ARGS(&resource)
 		) >> CHK_HR;
@@ -66,6 +67,6 @@ namespace DX12Abstractions
 
 	GPUResource CreateDefaultResource(ComPtr<ID3D12Device4> device, CD3DX12_RESOURCE_DESC resourceDesc)
 	{
-		return CreateResource(device, resourceDesc, D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_TYPE_DEFAULT);
+		return CreateResource(device, resourceDesc, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_HEAP_TYPE_DEFAULT);
 	}
 }

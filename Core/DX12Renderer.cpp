@@ -73,7 +73,7 @@ void DX12Renderer::Render()
 	XMMATRIX viewProjection = XMMatrixIdentity();
 	{
 		// View matrix.
-		const auto eye = XMVectorSet(0.0f, 0.0f, -2.0f, 0.0f);
+		const auto eye = XMVectorSet(0.0f, 3.0f, -10.0f, 0.0f);
 		const auto focus = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
 		const auto up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
@@ -104,10 +104,12 @@ void DX12Renderer::Render()
 		commandLists.push_back(mainThreadCommandListPre);
 	}
 
+	std::vector<RenderPassType> renderPassOrder = { IndexedPass, NonIndexedPass };
+
 	// Initialize all render passes.
-	for (auto& renderPass : m_renderPasses)
+	for (auto& renderPass : renderPassOrder)
 	{
-		renderPass.second->Init();
+		m_renderPasses[renderPass]->Init();
 	}
 
 	// Set start sync.
@@ -122,37 +124,56 @@ void DX12Renderer::Render()
 		// Wait for start sync.
 		m_syncHandler.WaitStart(context);
 
-		RenderPassType currentPass;
-
-		// Triangle pass.
+		for (RenderPassType renderPass : renderPassOrder)
 		{
-			currentPass = RenderPassType::TrianglePass;
-
-			TriangleRenderPass& triangleRenderPass = static_cast<TriangleRenderPass&>(*m_renderPasses[currentPass]);
-
-			TriangleRenderPass::TriangleRenderPassArgs args;
-			
-			// Add state args.
-			args.vertexBufferView = m_vertexBufferView;
-			args.renderTargetView = rtv;
-			args.rootSignature = m_rootSignature;
-			args.viewport = m_viewport;
-			args.scissorRect = m_scissorRect;
-
-			// Add view projection matrix.
-			args.viewProjectionMatrix = viewProjection;
-			
-			// Add draw args.
-			args.drawArgs.push_back({ vertexCount, 0, 0 });
-
-			triangleRenderPass.Render(context, m_device, args);
-
-			// Signal that pass is done.
-			m_syncHandler.SetPass(context, currentPass);
-		}
-		
-		{
-			// Any future passes can be added here.
+			if (renderPass == NonIndexedPass)
+			{
+				NonIndexedRenderPass& triangleRenderPass = static_cast<NonIndexedRenderPass&>(*m_renderPasses[renderPass]);
+				
+				RenderObject& triangleObject = m_renderObjects[0];
+				NonIndexedRenderPass::NonIndexedRenderPassArgs args;
+				
+				// Add state args.
+				args.renderObject = triangleObject;
+				args.renderTargetView = rtv;
+				args.rootSignature = m_rootSignature;
+				args.viewport = m_viewport;
+				args.scissorRect = m_scissorRect;
+				
+				// Add view projection matrix.
+				args.viewProjectionMatrix = viewProjection;
+				
+				triangleRenderPass.Render(context, m_device, args);
+				
+				// Signal that pass is done.
+				m_syncHandler.SetPass(context, renderPass);
+			}
+			else if (renderPass == IndexedPass)
+			{
+				IndexedRenderPass& cubeRenderPass = static_cast<IndexedRenderPass&>(*m_renderPasses[renderPass]);
+				
+				RenderObject& cubeObject = m_renderObjects[1];
+				IndexedRenderPass::IndexedRenderPassArgs args;
+				
+				// Add state args.
+				args.renderObject = cubeObject;
+				args.renderTargetView = rtv;
+				args.rootSignature = m_rootSignature;
+				args.viewport = m_viewport;
+				args.scissorRect = m_scissorRect;
+				
+				// Add view projection matrix.
+				args.viewProjectionMatrix = viewProjection;
+				
+				cubeRenderPass.Render(context, m_device, args);
+				
+				// Signal that pass is done.
+				m_syncHandler.SetPass(context, renderPass);
+			}
+			else
+			{
+				// Any future passes can be added here.
+			}
 		}
 
 		// Signal end sync.
@@ -163,11 +184,11 @@ void DX12Renderer::Render()
 	m_syncHandler.WaitEndAll();
 
 	// Add all command lists to the main command list.
-	for (auto& renderPass : m_renderPasses)
+	for (RenderPassType renderPass : renderPassOrder)
 	{
 		for (UINT context = 0; context < NumContexts; context++)
 		{
-			commandLists.push_back(renderPass.second->commandLists[context]);
+			commandLists.push_back(m_renderPasses[renderPass]->commandLists[context]);
 		}
 	}
 
@@ -473,8 +494,11 @@ void DX12Renderer::InitAssets()
 
 		NAME_D3D12_OBJECT(pipelineState);
 
-		m_renderPasses[TrianglePass] = std::make_unique<TriangleRenderPass>(m_device.Get(), pipelineState);
-		m_syncHandler.AddUniquePassSync(TrianglePass);
+		m_renderPasses[NonIndexedPass] = std::make_unique<NonIndexedRenderPass>(m_device.Get(), pipelineState);
+		m_syncHandler.AddUniquePassSync(NonIndexedPass);
+
+		m_renderPasses[IndexedPass] = std::make_unique<IndexedRenderPass>(m_device.Get(), pipelineState);
+		m_syncHandler.AddUniquePassSync(IndexedPass);
 	}
 
 	
@@ -502,6 +526,8 @@ void DX12Renderer::InitAssets()
 		dx::XMFLOAT3 position;
 		dx::XMFLOAT3 color;
 	};
+
+	RenderObject triangleObject;
 	{
 		std::array<Vertex, 3> triangleData{ {
 			{ { 0.0f, 0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f } }, // top
@@ -509,17 +535,16 @@ void DX12Renderer::InitAssets()
 			{ { -0.43f, -0.25f, 0.0f }, { 0.0f, 1.0f, 0.0f } } // left
 		} };
 
-		vertexCount = (UINT)triangleData.size();
-		m_vertexBufferSize = sizeof(triangleData);
+		UINT vertexCount = (UINT)triangleData.size();
+		UINT vertexBufferSize = sizeof(triangleData);
 
 		GPUResource vertexUploadBuffer;
 		{
-			CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(m_vertexBufferSize);
+			CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
 
-			m_vertexBuffer = CreateDefaultResource(m_device, bufferDesc);
 			vertexUploadBuffer = CreateUploadResource(m_device, bufferDesc);
 
-			NAME_D3D12_OBJECT(m_vertexBuffer);
+			triangleObject.vertexBuffer = CreateDefaultResource(m_device, bufferDesc);
 		}
 
 		// Copy the data onto GPU memory.
@@ -535,7 +560,7 @@ void DX12Renderer::InitAssets()
 		commandList->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
 
 		// Copy data from upload buffer into vertex buffer.
-		commandList->CopyResource(m_vertexBuffer.Get(), vertexUploadBuffer.Get());
+		commandList->CopyResource(triangleObject.vertexBuffer.Get(), vertexUploadBuffer.Get());
 
 		// Close when done.
 		commandList->Close() >> CHK_HR;
@@ -548,11 +573,155 @@ void DX12Renderer::InitAssets()
 		m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
 
 		// Create vertex buffer view.
+		auto& vbView = triangleObject.vertexBufferView;
 		{
-			m_vertexBufferView.BufferLocation = m_vertexBuffer.resource->GetGPUVirtualAddress();
-			m_vertexBufferView.StrideInBytes = sizeof(Vertex);
-			m_vertexBufferView.SizeInBytes = m_vertexBufferSize;
+			vbView.BufferLocation = triangleObject.vertexBuffer->GetGPUVirtualAddress();
+			vbView.StrideInBytes = sizeof(Vertex);
+			vbView.SizeInBytes = vertexBufferSize;
 		}
+
+		// Add to render objects.
+		DrawArgs triangleDrawArgs = {
+			.vertexCount = vertexCount,
+			.startVertex = 0,
+			.indexCount = 0,
+			.startIndex = 0
+		};
+		triangleObject.drawArgs.push_back(triangleDrawArgs);
+		m_renderObjects.push_back(triangleObject);
+	}
+
+
+	RenderObject cube;
+	{
+		UINT vertexCount = 0;
+		{
+			std::array<Vertex, 8> cubeData{ {
+			{ { -1.0f, -1.0f, -1.0f }, { 0.0f, 0.0f, 0.0f } }, // 0
+			{ { -1.0f,  1.0f, -1.0f }, { 0.0f, 1.0f, 0.0f } }, // 1
+			{ {  1.0f,  1.0f, -1.0f }, { 1.0f, 1.0f, 0.0f } }, // 2
+			{ {  1.0f, -1.0f, -1.0f }, { 1.0f, 0.0f, 0.0f } }, // 3
+			{ { -1.0f, -1.0f,  1.0f }, { 0.0f, 0.0f, 1.0f } }, // 4
+			{ { -1.0f,  1.0f,  1.0f }, { 0.0f, 1.0f, 1.0f } }, // 5
+			{ {  1.0f,  1.0f,  1.0f }, { 1.0f, 1.0f, 1.0f } }, // 6
+			{ {  1.0f, -1.0f,  1.0f }, { 1.0f, 0.0f, 1.0f } }  // 7
+			} };
+
+			vertexCount = (UINT)cubeData.size();
+			UINT vertexBufferSize = sizeof(cubeData);
+
+			GPUResource vertexUploadBuffer;
+			{
+				CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
+
+				vertexUploadBuffer = CreateUploadResource(m_device, bufferDesc);
+
+				cube.vertexBuffer = CreateDefaultResource(m_device, bufferDesc);
+			}
+
+			// Copy the data onto GPU memory.
+			{
+				Vertex* mappedVertexData = nullptr;
+				vertexUploadBuffer.resource->Map(0, nullptr, reinterpret_cast<void**>(&mappedVertexData)) >> CHK_HR;
+				std::ranges::copy(cubeData, mappedVertexData);
+				vertexUploadBuffer.resource->Unmap(0, nullptr);
+			}
+
+			// Reset command list and allocator.
+			m_commandAllocator->Reset() >> CHK_HR;
+			commandList->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
+
+			// Copy data from upload buffer into index buffer.
+			commandList->CopyResource(cube.vertexBuffer.Get(), vertexUploadBuffer.Get());
+
+			// Close when done.
+			commandList->Close() >> CHK_HR;
+
+			std::array<ID3D12CommandList* const, 1> commandLists = { commandList.Get() };
+			m_commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
+
+			m_commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
+
+			// Wait until the command queue is done.
+			m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
+
+			// Create vertex buffer view.
+			auto& vbView = cube.vertexBufferView;
+			{
+				vbView.BufferLocation = cube.vertexBuffer->GetGPUVirtualAddress();
+				vbView.StrideInBytes = sizeof(Vertex);
+				vbView.SizeInBytes = vertexBufferSize;
+			}
+		}
+
+		UINT indexCount = 0;
+		{
+			// Create index buffer.
+			std::array<uint32_t, 36> cubeIndices = {
+				0, 1, 2, 0, 2, 3, // front face
+				4, 6, 5, 4, 7, 6, // back face
+				4, 5, 1, 4, 1, 0, // left face
+				3, 2, 6, 3, 6, 7, // right face
+				1, 5, 6, 1, 6, 2, // top face
+				4, 0, 3, 4, 3, 7  // bottom face
+			};
+
+			indexCount = (UINT)cubeIndices.size();
+
+			GPUResource indexUploadBuffer;
+			{
+				CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(cubeIndices));
+
+				indexUploadBuffer = CreateUploadResource(m_device, bufferDesc);
+
+				cube.indexBuffer = CreateDefaultResource(m_device, bufferDesc);
+			}
+
+			// Copy the data onto GPU memory.
+			{
+				uint32_t* mappedIndexData = nullptr;
+				indexUploadBuffer.resource->Map(0, nullptr, reinterpret_cast<void**>(&mappedIndexData)) >> CHK_HR;
+				std::ranges::copy(cubeIndices, mappedIndexData);
+				indexUploadBuffer.resource->Unmap(0, nullptr);
+			}
+
+			// Reset command list and allocator.
+			m_commandAllocator->Reset() >> CHK_HR;
+			commandList->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
+
+			// Copy data from upload buffer into index buffer.
+			commandList->CopyResource(cube.indexBuffer.Get(), indexUploadBuffer.Get());
+
+			// Close when done.
+			commandList->Close() >> CHK_HR;
+
+			std::array<ID3D12CommandList* const, 1> commandLists = { commandList.Get() };
+			m_commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
+
+			m_commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
+
+			// Wait until the command queue is done.
+			m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
+
+			// Create index buffer view.
+			auto& ibView = cube.indexBufferView;
+			{
+				ibView.BufferLocation = cube.indexBuffer->GetGPUVirtualAddress();
+				ibView.Format = DXGI_FORMAT_R32_UINT;
+				ibView.SizeInBytes = sizeof(cubeIndices);
+			}
+		}
+
+		// Add to render objects.
+		DrawArgs cubeDrawArgs = {
+			.vertexCount = vertexCount,
+			.startVertex = 0,
+			.indexCount = indexCount,
+			.startIndex = 0
+		};
+
+		cube.drawArgs.push_back(cubeDrawArgs);
+		m_renderObjects.push_back(cube);
 	}
 
 }

@@ -37,10 +37,7 @@ void DX12RenderPass::Init()
 
 }
 
-TriangleRenderPass::TriangleRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState) 
-	: DX12RenderPass(device, pipelineState) {}
-
-void TriangleRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, TriangleRenderPassArgs args)
+void NonIndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, NonIndexedRenderPassArgs args)
 {
 	auto& commandList = commandLists[context];
 	
@@ -50,7 +47,7 @@ void TriangleRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Trian
 	
 	// Set vertex buffer as triangle list.
 	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	commandList->IASetVertexBuffers(0, 1, &args.vertexBufferView);
+	commandList->IASetVertexBuffers(0, 1, &args.renderObject.vertexBufferView);
 
 	// Configure RS.
 	commandList->RSSetViewports(1, &args.viewport);
@@ -63,15 +60,18 @@ void TriangleRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Trian
 	t += 1 / 144.0f;
 	float angle = t * XM_2PI;
 	const auto rotationMatrix = XMMatrixRotationZ(angle);
+	const auto translationMatrix = XMMatrixTranslation(0.0f, 1.0f, 0.0f);
+	const auto combinedMatrix = rotationMatrix * translationMatrix;
 
-	const auto modelViewProjectionMatrix = XMMatrixTranspose(rotationMatrix * args.viewProjectionMatrix);
+	const auto modelViewProjectionMatrix = XMMatrixTranspose(combinedMatrix * args.viewProjectionMatrix);
 
 	commandList->SetGraphicsRoot32BitConstants(0, sizeof(modelViewProjectionMatrix) / sizeof(float), &modelViewProjectionMatrix, 0);
 	
 	// Draw.
-	for (UINT i = context; i < args.drawArgs.size(); i += NumContexts)
+	std::vector<DrawArgs>& drawArgs = args.renderObject.drawArgs;
+	for (UINT i = context; i < drawArgs.size(); i += NumContexts)
 	{
-		const DrawArgs& drawArg = args.drawArgs[i];
+		const DrawArgs& drawArg = drawArgs[i];
 
 		commandList->DrawInstanced(
 			drawArg.vertexCount,
@@ -83,4 +83,52 @@ void TriangleRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Trian
 
 	// Finish off by closing the command list.
 	commandList->Close() >> CHK_HR;
+}
+
+void IndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, IndexedRenderPassArgs args)
+{
+	auto& commandList = commandLists[context];
+
+	// Set root signature and pipeline state.
+	commandList->SetGraphicsRootSignature(args.rootSignature.Get());
+	commandList->SetPipelineState(m_pipelineState.Get());
+
+	// Set vertex buffer as triangle list.
+	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	commandList->IASetVertexBuffers(0, 1, &args.renderObject.vertexBufferView);
+	commandList->IASetIndexBuffer(&args.renderObject.indexBufferView);
+
+	// Configure RS.
+	commandList->RSSetViewports(1, &args.viewport);
+	commandList->RSSetScissorRects(1, &args.scissorRect);
+
+	// Set render target.
+	commandList->OMSetRenderTargets(1, &args.renderTargetView, TRUE, nullptr);
+
+	static float t = 0;
+	t += 1 / 144.0f;
+	float angle = t * XM_2PI;
+	const auto rotationMatrix = XMMatrixRotationX(angle * 1.2f + 1.0f) * XMMatrixRotationY(angle * 0.8f + 1.3f) * XMMatrixRotationZ(angle * 1.0f + 3.0f);
+	const auto modelViewProjectionMatrix = XMMatrixTranspose(rotationMatrix * args.viewProjectionMatrix);
+
+	commandList->SetGraphicsRoot32BitConstants(0, sizeof(modelViewProjectionMatrix) / sizeof(float), &modelViewProjectionMatrix, 0);
+
+	// Draw.
+	std::vector<DrawArgs>& drawArgs = args.renderObject.drawArgs;
+	for (UINT i = context; i < drawArgs.size(); i += NumContexts)
+	{
+		const DrawArgs& drawArg = drawArgs[i];
+
+		commandList->DrawIndexedInstanced(
+			drawArg.indexCount,
+			1,
+			drawArg.startIndex,
+			drawArg.baseVertex,
+			drawArg.startInstance
+		);
+	}
+
+	// Finish off by closing the command list.
+	commandList->Close() >> CHK_HR;
+
 }

@@ -6,6 +6,7 @@
 #include <unordered_map>
 
 #include "GPUResource.h"
+#include "RenderObject.h"
 #include "DX12SyncHandler.h"
 #include "DX12RenderPass.h"
 #include "AppDefines.h"
@@ -66,12 +67,8 @@ private:
 	ComPtr<ID3D12Fence> m_fence;
 	UINT m_fenceValue;
 	DX12SyncHandler m_syncHandler;
-	
-	// Resources.
-	DX12Abstractions::GPUResource m_vertexBuffer;
-	UINT m_vertexBufferSize;
-	UINT vertexCount;
-	D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView;
+
+	std::vector<RenderObject> m_renderObjects;
 
 	static DX12Renderer* s_instance;
 };
