@@ -60,10 +60,11 @@ void TriangleRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Trian
 	commandList->OMSetRenderTargets(1, &args.renderTargetView, TRUE, nullptr);
 
 	static float t = 0;
-	t += 1 / 60.0f;
-	const auto rotationMatrix = XMMatrixRotationZ(t);
+	t += 1 / 144.0f;
+	float angle = t * XM_2PI;
+	const auto rotationMatrix = XMMatrixRotationZ(angle);
 
-	const auto modelViewProjectionMatrix = rotationMatrix * args.viewProjectionMatrix;
+	const auto modelViewProjectionMatrix = XMMatrixTranspose(rotationMatrix * args.viewProjectionMatrix);
 
 	commandList->SetGraphicsRoot32BitConstants(0, sizeof(modelViewProjectionMatrix) / sizeof(float), &modelViewProjectionMatrix, 0);
 	

@@ -81,7 +81,7 @@ void DX12Renderer::Render()
 
 		// Projection matrix.
 		const auto aspectRatio = static_cast<float>(m_width) / static_cast<float>(m_height);
-		const auto proj = XMMatrixPerspectiveFovLH(XM_PIDIV2, aspectRatio, 0.01f, 100.0f);
+		const auto proj = XMMatrixPerspectiveFovLH(XM_PIDIV4, aspectRatio, 0.01f, 100.0f);
 
 		// View projection matrix.
 		viewProjection = view * proj;

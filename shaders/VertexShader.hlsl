@@ -21,7 +21,7 @@ VSOut main(VSIn input)
 {
     VSOut output = (VSOut) 0;
     
-    output.pos = mul(rot.transform, float4(input.pos, 1.0f));
+    output.pos = mul(float4(input.pos, 1.0f), rot.transform);
     output.color = float4(input.color, 1.0f);
 
     return output;
