@@ -6,17 +6,15 @@
 #include <unordered_map>
 
 #include "GPUResource.h"
+#include "DX12SyncHandler.h"
+#include "DX12RenderPass.h"
+#include "AppDefines.h"
 
 using Microsoft::WRL::ComPtr;
 
 constexpr UINT BufferCount = 2;
 
 typedef UINT ShaderPipelineStateType;
-
-struct ShaderPipeline
-{
-	ComPtr<ID3D12PipelineState> pipelineState;
-};
 
 // Singleton class designed with a public constructor that only is allowed to be called once.
 class DX12Renderer
@@ -61,12 +59,13 @@ private:
 	UINT m_rtvDescriptorSize;
 	std::array<DX12Abstractions::GPUResource, BufferCount> m_renderTargets;
 
-	std::unordered_map<ShaderPipelineStateType, ShaderPipeline> m_pipelineStates;
+	std::unordered_map<RenderPassType, std::unique_ptr<DX12RenderPass>> m_renderPasses;
 	ComPtr<ID3D12RootSignature> m_rootSignature;
 
 	// Synchronization objects.
 	ComPtr<ID3D12Fence> m_fence;
 	UINT m_fenceValue;
+	DX12SyncHandler m_syncHandler;
 	
 	// Resources.
 	DX12Abstractions::GPUResource m_vertexBuffer;

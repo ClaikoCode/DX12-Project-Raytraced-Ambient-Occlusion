@@ -1,19 +1,13 @@
 #include "DX12Renderer.h"
 
 #include <stdexcept>
+#include <vector>
 
 #include "GraphicsErrorHandling.h"
 #include "DX12AbstractionUtils.h"
 
 using namespace DX12Abstractions;
 namespace dx = DirectX;
-
-enum ShaderPipelineState : ShaderPipelineStateType
-{
-	ShaderPipelineStateTriangle = 0,
-
-	ShaderPipelineStateCount // Keep last!
-};
 
 DX12Renderer* DX12Renderer::s_instance = nullptr;
 
@@ -36,22 +30,34 @@ DX12Renderer& DX12Renderer::Get()
 void DX12Renderer::Render()
 {
 	UINT currBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
-	ComPtr<ID3D12GraphicsCommandList1> commandList;
-	m_device->CreateCommandList1(
-		0,
-		D3D12_COMMAND_LIST_TYPE_DIRECT,
-		D3D12_COMMAND_LIST_FLAG_NONE,
-		IID_PPV_ARGS(&commandList)
-	) >> CHK_HR;
 
-	auto& pipelineState = m_pipelineStates[ShaderPipelineStateTriangle].pipelineState;
+	// Store command lists for each render pass.
+	std::vector<ComPtr<ID3D12CommandList>> commandLists;
+
+	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPre;
+	if (mainThreadCommandListPre == nullptr)
+	{
+		m_device->CreateCommandList1(
+			0,
+			D3D12_COMMAND_LIST_TYPE_DIRECT,
+			D3D12_COMMAND_LIST_FLAG_NONE,
+			IID_PPV_ARGS(&mainThreadCommandListPre)
+		) >> CHK_HR;
+	}
+
+	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPost;
+	if (mainThreadCommandListPost == nullptr)
+	{
+		m_device->CreateCommandList1(
+			0,
+			D3D12_COMMAND_LIST_TYPE_DIRECT,
+			D3D12_COMMAND_LIST_FLAG_NONE,
+			IID_PPV_ARGS(&mainThreadCommandListPost)
+		) >> CHK_HR;
+	}
 
 	// Fetch the current back buffer that we want to render to.
 	auto& backBuffer = m_renderTargets[currBackBufferIndex];
-
-	// Reset command list and command allocator.
-	m_commandAllocator->Reset() >> CHK_HR;
-	commandList->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
 
 	// Get RTV handle for the current back buffer.
 	const CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(
@@ -60,40 +66,108 @@ void DX12Renderer::Render()
 		m_rtvDescriptorSize
 	);
 
-	// Clear render target.
+	// Reset command list and command allocator.
+	m_commandAllocator->Reset() >> CHK_HR;
+	mainThreadCommandListPre->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
+	
+	
+	// Pre render pass setup.
 	{
-		backBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, commandList);
+		// Clear render target.
+		{
+			backBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
 
-		float clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
-		commandList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
+			float clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
+			mainThreadCommandListPre->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
+		}
+
+		mainThreadCommandListPre->Close();
+
+		// Add command list to list of command lists.
+		commandLists.push_back(mainThreadCommandListPre);
 	}
 
-	// Set pipeline state.
-	commandList->SetGraphicsRootSignature(m_rootSignature.Get());
-	commandList->SetPipelineState(pipelineState.Get());
+	// Initialize all render passes.
+	for (auto& renderPass : m_renderPasses)
+	{
+		renderPass.second->Init();
+	}
 
-	// Configure IA.
-	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
+	// Set start sync.
+	for (UINT context = 0; context < NumContexts; context++)
+	{
+		m_syncHandler.SetStart(context);
+	}
 
-	// Configure RS.
-	commandList->RSSetViewports(1, &m_viewport);
-	commandList->RSSetScissorRects(1, &m_scissorRect);
+	// This is supposed to be ran by different threads.
+	for (UINT context = 0; context < NumContexts; context++)
+	{
+		// Wait for start sync.
+		m_syncHandler.WaitStart(context);
 
-	// Bind render target.
-	commandList->OMSetRenderTargets(1, &rtv, TRUE, nullptr);
+		RenderPassType currentPass;
 
-	// Draw triangle.
-	commandList->DrawInstanced(vertexCount, 1, 0, 0);
+		// Triangle pass.
+		{
+			currentPass = RenderPassType::TrianglePass;
+
+			TriangleRenderPass& triangleRenderPass = static_cast<TriangleRenderPass&>(*m_renderPasses[currentPass]);
+
+			TriangleRenderPass::TriangleRenderPassArgs args;
+			
+			// Add state args.
+			args.vertexBufferView = m_vertexBufferView;
+			args.renderTargetView = rtv;
+			args.rootSignature = m_rootSignature;
+			args.viewport = m_viewport;
+			args.scissorRect = m_scissorRect;
+			
+			// Add draw args.
+			args.drawArgs.push_back({ vertexCount, 0, 0 });
+
+			triangleRenderPass.Render(context, m_device, args);
+
+			// Signal that pass is done.
+			m_syncHandler.SetPass(context, currentPass);
+		}
+		
+		{
+			// Any future passes can be added here.
+		}
+
+		// Signal end sync.
+		m_syncHandler.SetEnd(context);
+	}
+
+	// Wait for all passes to finish.
+	m_syncHandler.WaitEndAll();
+
+	// Add all command lists to the main command list.
+	for (auto& renderPass : m_renderPasses)
+	{
+		for (UINT context = 0; context < NumContexts; context++)
+		{
+			commandLists.push_back(renderPass.second->commandLists[context]);
+		}
+	}
+
+	// Reset post command list with allocator used on command list recently closed.
+	mainThreadCommandListPost->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
 
 	// Prepare for present
-	backBuffer.TransitionTo(D3D12_RESOURCE_STATE_PRESENT, commandList);
+	backBuffer.TransitionTo(D3D12_RESOURCE_STATE_PRESENT, mainThreadCommandListPost);
 
-	// Close command list and execute.
+	// Close post command list.
+	mainThreadCommandListPost->Close() >> CHK_HR;
+
+	// Add post command list to list of command lists.
+	commandLists.push_back(mainThreadCommandListPost);
+
+	// Execute all command lists.
 	{
-		commandList->Close() >> CHK_HR;
-		ID3D12CommandList* const commandLists[] = { commandList.Get() };
-		m_commandQueue->ExecuteCommandLists((UINT)std::size(commandLists), commandLists);
+		ID3D12CommandList* const* commandListsRaw = commandLists[0].GetAddressOf();
+
+		m_commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
 	}
 
 	// Insert fence that signifies command list completion.
@@ -194,6 +268,8 @@ void DX12Renderer::InitPipeline()
 		D3D12CreateDevice(warpAdapter.Get(), featureLevel, IID_PPV_ARGS(&m_device)) >> CHK_HR;
 	}
 
+	NAME_D3D12_OBJECT(m_device);
+
 	// Create command queue.
 	{
 		const D3D12_COMMAND_QUEUE_DESC commandQueueDesc = {
@@ -204,11 +280,15 @@ void DX12Renderer::InitPipeline()
 		};
 
 		m_device->CreateCommandQueue(&commandQueueDesc, IID_PPV_ARGS(&m_commandQueue)) >> CHK_HR;
+
+		NAME_D3D12_OBJECT(m_commandQueue);
 	}
 
 	// Create command allocator.
 	{
 		m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_commandAllocator)) >> CHK_HR;
+
+		NAME_D3D12_OBJECT(m_commandAllocator);
 	}
 
 	// Create swap chain.
@@ -254,6 +334,8 @@ void DX12Renderer::InitPipeline()
 
 		m_device->CreateDescriptorHeap(&rtvDescriptorHeapDesc, IID_PPV_ARGS(&m_rtvHeap)) >> CHK_HR;
 		m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+		NAME_D3D12_OBJECT(m_rtvHeap);
 	}
 
 	// Create render target views.
@@ -265,11 +347,10 @@ void DX12Renderer::InitPipeline()
 			m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_renderTargets[i])) >> CHK_HR;
 			m_device->CreateRenderTargetView(m_renderTargets[i].Get(), nullptr, rtvHandle);
 			rtvHandle.Offset(1, m_rtvDescriptorSize);
+
+			NAME_D3D12_OBJECT_INDEXED(m_renderTargets, i);
 		}
 	}
-
-	// Initialize shader pipelines.
-	m_pipelineStates[ShaderPipelineStateTriangle] = {};
 }
 
 void DX12Renderer::InitAssets()
@@ -319,8 +400,10 @@ void DX12Renderer::InitAssets()
 				IID_PPV_ARGS(&m_rootSignature)
 			) >> CHK_HR;
 
+			NAME_D3D12_OBJECT(m_rootSignature);
 		}
 	}
+
 	
 	// Create pipeline state object.
 	{
@@ -345,6 +428,7 @@ void DX12Renderer::InitAssets()
 		ComPtr<ID3DBlob> psBlob;
 		D3DReadFileToBlob(L"../PixelShader.cso", &psBlob) >> CHK_HR;
 
+
 		pipelineStateStream.RootSignature = m_rootSignature.Get();
 		pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
 		pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
@@ -359,11 +443,18 @@ void DX12Renderer::InitAssets()
 			.SizeInBytes = sizeof(PipelineStateStream),
 			.pPipelineStateSubobjectStream = &pipelineStateStream
 		};
+
 		
-		auto& pipelineState = m_pipelineStates[ShaderPipelineStateTriangle].pipelineState;
+		ComPtr<ID3D12PipelineState> pipelineState;
 		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&pipelineState)) >> CHK_HR;
 
+		NAME_D3D12_OBJECT(pipelineState);
+
+		m_renderPasses[TrianglePass] = std::make_unique<TriangleRenderPass>(m_device.Get(), pipelineState);
+		m_syncHandler.AddUniquePassSync(TrianglePass);
 	}
+
+	
 
 
 	// Temp command list for setting up the assets.
@@ -379,6 +470,8 @@ void DX12Renderer::InitAssets()
 
 	// Create fence.
 	m_device->CreateFence(m_fenceValue, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)) >> CHK_HR;
+
+	NAME_D3D12_OBJECT(m_fence);
 
 	// Create vertex buffers.
 	struct Vertex
@@ -402,6 +495,8 @@ void DX12Renderer::InitAssets()
 
 			m_vertexBuffer = CreateDefaultResource(m_device, bufferDesc);
 			vertexUploadBuffer = CreateUploadResource(m_device, bufferDesc);
+
+			NAME_D3D12_OBJECT(m_vertexBuffer);
 		}
 
 		// Copy the data onto GPU memory.

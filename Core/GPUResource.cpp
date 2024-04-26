@@ -1,5 +1,6 @@
 #include "GPUResource.h"
 #include "GraphicsErrorHandling.h"
+#include "DX12AbstractionUtils.h"
 
 namespace DX12Abstractions
 {

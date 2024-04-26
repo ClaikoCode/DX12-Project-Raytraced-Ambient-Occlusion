@@ -1,6 +1,7 @@
 #include "DX12RenderPass.h"
 
 #include "GraphicsErrorHandling.h"
+#include "DX12AbstractionUtils.h"
 
 DX12RenderPass::DX12RenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState) :
 	m_pipelineState(pipelineState) 
@@ -20,25 +21,57 @@ DX12RenderPass::DX12RenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState>
 			IID_PPV_ARGS(&commandLists[i])
 		) >> CHK_HR;
 
-		commandLists[i]->Close();
+		commandLists[i]->Close() >> CHK_HR;
 	}
 }
 
-DX12RenderPass::~DX12RenderPass()
+void DX12RenderPass::Init()
 {
-	// Not implemented
+	// Reset the command lists and allocators.
+
+	for (UINT i = 0; i < NumContexts; i++)
+	{
+		commandAllocators[i]->Reset() >> CHK_HR;
+		commandLists[i]->Reset(commandAllocators[i].Get(), m_pipelineState.Get()) >> CHK_HR;
+	}
+
 }
 
-void TriangleRend
+TriangleRenderPass::TriangleRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState) 
+	: DX12RenderPass(device, pipelineState) {}
 
-
-
-
-
-
-
-erPass::Init()
+void TriangleRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, TriangleRenderPassArgs args)
 {
+	auto& commandList = commandLists[context];
+	
+	// Set root signature and pipeline state.
+	commandList->SetGraphicsRootSignature(args.rootSignature.Get());
+	commandList->SetPipelineState(m_pipelineState.Get());
+	
+	// Set vertex buffer as triangle list.
+	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	commandList->IASetVertexBuffers(0, 1, &args.vertexBufferView);
 
+	// Configure RS.
+	commandList->RSSetViewports(1, &args.viewport);
+	commandList->RSSetScissorRects(1, &args.scissorRect);
 
+	// Set render target.
+	commandList->OMSetRenderTargets(1, &args.renderTargetView, TRUE, nullptr);
+	
+	// Draw.
+	for (UINT i = context; i < args.drawArgs.size(); i += NumContexts)
+	{
+		const DrawArgs& drawArg = args.drawArgs[i];
+
+		commandList->DrawInstanced(
+			drawArg.vertexCount,
+			1,
+			drawArg.startVertex,
+			drawArg.startInstance
+		);
+	}
+
+	// Finish off by closing the command list.
+	commandList->Close() >> CHK_HR;
 }
