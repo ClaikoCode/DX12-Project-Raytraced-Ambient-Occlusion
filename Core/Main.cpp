@@ -8,7 +8,7 @@ WCHAR WindowTitle[Core::MAX_CLASS_NAME_LENGTH] = L"DirectX12";
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, INT)
 {
-	Core::Window window(WindowClass, WindowTitle, 800, 600);
+	Core::Window window(WindowClass, WindowTitle, 1280, 720);
 
 	window.Show();
 

@@ -70,6 +70,23 @@ void DX12Renderer::Render()
 	m_commandAllocator->Reset() >> CHK_HR;
 	mainThreadCommandListPre->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
 	
+	XMMATRIX viewProjection = XMMatrixIdentity();
+	{
+		// View matrix.
+		const auto eye = XMVectorSet(0.0f, 0.0f, -2.0f, 0.0f);
+		const auto focus = XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f);
+		const auto up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+		const auto view = XMMatrixLookAtLH(eye, focus, up);
+
+		// Projection matrix.
+		const auto aspectRatio = static_cast<float>(m_width) / static_cast<float>(m_height);
+		const auto proj = XMMatrixPerspectiveFovLH(XM_PIDIV2, aspectRatio, 0.01f, 100.0f);
+
+		// View projection matrix.
+		viewProjection = view * proj;
+	}
+
 	
 	// Pre render pass setup.
 	{
@@ -121,6 +138,9 @@ void DX12Renderer::Render()
 			args.rootSignature = m_rootSignature;
 			args.viewport = m_viewport;
 			args.scissorRect = m_scissorRect;
+
+			// Add view projection matrix.
+			args.viewProjectionMatrix = viewProjection;
 			
 			// Add draw args.
 			args.drawArgs.push_back({ vertexCount, 0, 0 });
@@ -357,11 +377,14 @@ void DX12Renderer::InitAssets()
 {
 	// Create root signature.
 	{
+		std::array<CD3DX12_ROOT_PARAMETER, 1> rootParameters = {};
+		// Add a matrix to the root signature where each element is stored as a constant.
+		rootParameters[0].InitAsConstants(sizeof(dx::XMMATRIX) / 4, 0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+
 		CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
-		// Empty root sig for now.
 		rootSignatureDesc.Init(
-			0,
-			nullptr,
+			(UINT)rootParameters.size(),
+			rootParameters.data(),
 			0,
 			nullptr,
 			D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT

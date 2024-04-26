@@ -49,6 +49,8 @@ public:
 		CD3DX12_VIEWPORT viewport;
 		CD3DX12_RECT scissorRect;
 
+		XMMATRIX viewProjectionMatrix;
+
 		std::vector<DrawArgs> drawArgs;
 	};
 
