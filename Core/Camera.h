@@ -17,6 +17,10 @@ struct CameraData
 		projectionMatrix(DirectX::XMMatrixIdentity()),
 		viewProjectionMatrix(DirectX::XMMatrixIdentity()) {}
 
+
+
+
+
 	float fov;
 	float aspectRatio;
 	float nearZ;

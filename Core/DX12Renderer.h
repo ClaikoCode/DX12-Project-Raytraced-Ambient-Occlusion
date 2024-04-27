@@ -10,6 +10,7 @@
 #include "DX12SyncHandler.h"
 #include "DX12RenderPass.h"
 #include "AppDefines.h"
+#include "Camera.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -73,6 +74,9 @@ private:
 	DX12SyncHandler m_syncHandler;
 
 	std::vector<RenderObject> m_renderObjects;
+
+	Camera* m_activeCamera;
+	std::vector<Camera> m_cameras;
 
 	static DX12Renderer* s_instance;
 };

@@ -5,7 +5,7 @@
 
 #include "GraphicsErrorHandling.h"
 #include "DX12AbstractionUtils.h"
-#include "Camera.h"
+
 
 using namespace DX12Abstractions;
 namespace dx = DirectX;
@@ -74,15 +74,6 @@ void DX12Renderer::Render()
 	m_commandAllocator->Reset() >> CHK_HR;
 	mainThreadCommandListPre->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
 	
-	// Set camera.
-	const float aspectRatio = static_cast<float>(m_width) / static_cast<float>(m_height);
-	const float nearZ = 0.01f;
-	const float farZ = 100.0f;
-	const float fov = XM_PIDIV4;
-	Camera camera = Camera(fov, aspectRatio, nearZ, farZ);
-	
-	// Update camera
-	camera.SetPosAndDir({ 0.0f, 0.0f, -10.0f }, { 0.0f, 0.0f, 1.0f });
 	
 	// Pre render pass setup.
 	{
@@ -124,6 +115,10 @@ void DX12Renderer::Render()
 		m_syncHandler.SetStart(context);
 	}
 
+	// Update camera before rendering.
+	m_activeCamera->UpdateViewMatrix();
+	m_activeCamera->UpdateViewProjectionMatrix();
+
 	// This is supposed to be ran by different threads.
 	for (UINT context = 0; context < NumContexts; context++)
 	{
@@ -148,7 +143,7 @@ void DX12Renderer::Render()
 				args.scissorRect = m_scissorRect;
 				
 				// Add view projection matrix.
-				args.viewProjectionMatrix = camera.GetViewProjectionMatrix();
+				args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
 				
 				triangleRenderPass.Render(context, m_device, args);
 				
@@ -171,7 +166,7 @@ void DX12Renderer::Render()
 				args.scissorRect = m_scissorRect;
 				
 				// Add view projection matrix.
-				args.viewProjectionMatrix = camera.GetViewProjectionMatrix();
+				args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
 				
 				cubeRenderPass.Render(context, m_device, args);
 				
@@ -786,6 +781,19 @@ void DX12Renderer::InitAssets()
 
 		cube.drawArgs.push_back(cubeDrawArgs);
 		m_renderObjects.push_back(cube);
+	}
+
+	// Initialize camera.
+	{
+		const float aspectRatio = static_cast<float>(m_width) / static_cast<float>(m_height);
+		const float nearZ = 0.01f;
+		const float farZ = 100.0f;
+		const float fov = XM_PIDIV4;
+
+		m_cameras.push_back(Camera(fov, aspectRatio, nearZ, farZ));
+		m_activeCamera = &m_cameras[0];
+
+		m_activeCamera->SetPosAndDir({ 0.0f, 0.0f, -10.0f }, { 0.0f, 0.0f, 1.0f });
 	}
 
 }
