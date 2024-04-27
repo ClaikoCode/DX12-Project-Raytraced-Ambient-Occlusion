@@ -411,6 +411,8 @@ void DX12Renderer::InitPipeline()
 
 	// Create depth buffer.
 	{
+		const CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+
 		const CD3DX12_RESOURCE_DESC depthBufferDesc = CD3DX12_RESOURCE_DESC::Tex2D(
 			DXGI_FORMAT_D32_FLOAT,
 			m_width,
@@ -424,7 +426,14 @@ void DX12Renderer::InitPipeline()
 			.DepthStencil = { 1.0f, 0 }
 		};
 
-		m_depthBuffer = CreateResource(m_device, depthBufferDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_HEAP_TYPE_DEFAULT);
+		m_device->CreateCommittedResource(
+			&heapProps,
+			D3D12_HEAP_FLAG_NONE,
+			&depthBufferDesc,
+			D3D12_RESOURCE_STATE_DEPTH_WRITE,
+			&depthOptimizedClearValue,
+			IID_PPV_ARGS(&m_depthBuffer)
+		) >> CHK_HR;
 	
 		NAME_D3D12_OBJECT(m_depthBuffer);
 	}
@@ -586,7 +595,7 @@ void DX12Renderer::InitAssets()
 		dx::XMFLOAT3 color;
 	};
 
-	RenderObject triangleObject;
+	RenderObject nonIndexedObject;
 	{
 		std::array<Vertex, 3> triangleData{ {
 			{ { 0.0f, 0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f } }, // top
@@ -603,7 +612,7 @@ void DX12Renderer::InitAssets()
 
 			vertexUploadBuffer = CreateUploadResource(m_device, bufferDesc);
 
-			triangleObject.vertexBuffer = CreateDefaultResource(m_device, bufferDesc);
+			nonIndexedObject.vertexBuffer = CreateDefaultResource(m_device, bufferDesc);
 		}
 
 		// Copy the data onto GPU memory.
@@ -619,8 +628,8 @@ void DX12Renderer::InitAssets()
 		commandList->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
 
 		// Copy data from upload buffer into vertex buffer.
-		commandList->CopyResource(triangleObject.vertexBuffer.Get(), vertexUploadBuffer.Get());
-		triangleObject.vertexBuffer.TransitionTo(D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, commandList);
+		commandList->CopyResource(nonIndexedObject.vertexBuffer.Get(), vertexUploadBuffer.Get());
+		nonIndexedObject.vertexBuffer.TransitionTo(D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, commandList);
 
 		// Close when done.
 		commandList->Close() >> CHK_HR;
@@ -633,9 +642,9 @@ void DX12Renderer::InitAssets()
 		m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
 
 		// Create vertex buffer view.
-		auto& vbView = triangleObject.vertexBufferView;
+		auto& vbView = nonIndexedObject.vertexBufferView;
 		{
-			vbView.BufferLocation = triangleObject.vertexBuffer.resource->GetGPUVirtualAddress();
+			vbView.BufferLocation = nonIndexedObject.vertexBuffer.resource->GetGPUVirtualAddress();
 			vbView.StrideInBytes = sizeof(Vertex);
 			vbView.SizeInBytes = vertexBufferSize;
 		}
@@ -647,8 +656,8 @@ void DX12Renderer::InitAssets()
 			.indexCount = 0,
 			.startIndex = 0
 		};
-		triangleObject.drawArgs.push_back(triangleDrawArgs);
-		m_renderObjects.push_back(triangleObject);
+		nonIndexedObject.drawArgs.push_back(triangleDrawArgs);
+		m_renderObjects.push_back(nonIndexedObject);
 	}
 
 

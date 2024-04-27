@@ -18,3 +18,6 @@ out/
 
 # VS options directory
 .vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters

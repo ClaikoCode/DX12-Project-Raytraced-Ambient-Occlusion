@@ -105,6 +105,7 @@ void IndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Indexe
 	// Set render target and depth stencil.
 	commandList->OMSetRenderTargets(1, &args.renderTargetView, TRUE, &args.depthStencilView);
 
+
 	static float t = 0;
 	t += 1 / 144.0f;
 	float angle = t * XM_2PI;
