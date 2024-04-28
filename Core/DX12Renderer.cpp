@@ -7,6 +7,11 @@
 #include "DX12AbstractionUtils.h"
 #include "tiny_obj_loader.h"
 
+// TODO: Move this when more cohesive use is found.
+template<> DXGI_FORMAT GetDXGIFormat<float>() { return DXGI_FORMAT_R32_FLOAT; }
+template<> DXGI_FORMAT GetDXGIFormat<uint32_t>() { return DXGI_FORMAT_R32_UINT; }
+template<> DXGI_FORMAT GetDXGIFormat<uint16_t>() { return DXGI_FORMAT_R16_UINT; }
+
 using namespace DX12Abstractions;
 namespace dx = DirectX;
 
@@ -718,12 +723,12 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 	commandList->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
 
 	UINT vertexCount = 0;
-	UINT vertexBufferSize = 0;
 	GPUResource vertexUploadBuffer;
 	if(vertices != nullptr)
 	{
 		vertexCount = (UINT)vertices->size();
-		vertexBufferSize = sizeof(vertices->at(0)) * vertexCount;
+		UINT vertexSize = sizeof(vertices->at(0));
+		UINT vertexBufferSize = vertexSize * vertexCount;
 
 		UploadResource<Vertex>(
 			m_device,
@@ -738,7 +743,7 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 		auto& vbView = renderObject.vertexBufferView;
 		{
 			vbView.BufferLocation = renderObject.vertexBuffer.resource->GetGPUVirtualAddress();
-			vbView.StrideInBytes = sizeof(vertices->at(0));
+			vbView.StrideInBytes = vertexSize;
 			vbView.SizeInBytes = vertexBufferSize;
 		}
 
@@ -746,12 +751,12 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 	}
 
 	UINT indexCount = 0;
-	UINT indexBufferSize = 0;
 	GPUResource indexUploadBuffer;
 	if(indices != nullptr)
 	{
 		indexCount = (UINT)indices->size();
-		indexBufferSize = sizeof(indices->at(0)) * indexCount;
+		UINT indexSize = sizeof(indices->at(0));
+		UINT indexBufferSize = indexSize * indexCount;
 
 		UploadResource<uint32_t>(
 			m_device,
@@ -766,7 +771,7 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 		auto& ibView = renderObject.indexBufferView;
 		{
 			ibView.BufferLocation = renderObject.indexBuffer.resource->GetGPUVirtualAddress();
-			ibView.Format = DXGI_FORMAT_R32_UINT;
+			ibView.Format = GetDXGIFormat<uint32_t>();
 			ibView.SizeInBytes = indexBufferSize;
 		}
 

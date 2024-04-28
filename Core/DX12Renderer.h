@@ -18,6 +18,8 @@ constexpr UINT BufferCount = 2;
 
 typedef UINT ShaderPipelineStateType;
 
+template<typename T> DXGI_FORMAT GetDXGIFormat() { throw std::exception("Unsupported type"); }
+
 // Create vertex buffers.
 struct Vertex
 {
