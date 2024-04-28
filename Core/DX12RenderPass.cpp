@@ -42,7 +42,7 @@ void DX12RenderPass::Close(UINT context)
 	commandLists[context]->Close() >> CHK_HR;
 }
 
-void NonIndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, NonIndexedRenderPassArgs args)
+void NonIndexedRenderPass::Render(const std::vector<RenderObject>& renderObjects, UINT context, ComPtr<ID3D12Device> device, NonIndexedRenderPassArgs args)
 {
 	auto& commandList = commandLists[context];
 	
@@ -52,7 +52,7 @@ void NonIndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Non
 	
 	// Set vertex buffer as triangle list.
 	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	commandList->IASetVertexBuffers(0, 1, &args.renderObject.vertexBufferView);
+	
 
 	// Configure RS.
 	commandList->RSSetViewports(1, &args.viewport);
@@ -60,34 +60,37 @@ void NonIndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Non
 
 	// Set render target and depth stencil.
 	commandList->OMSetRenderTargets(1, &args.renderTargetView, TRUE, &args.depthStencilView);
-
-	static float t = 0;
-	t += 1 / 144.0f;
-	float angle = t * XM_2PI;
-	const auto rotationMatrix = XMMatrixRotationZ(angle);
-	const auto translationMatrix = XMMatrixTranslation(0.0f, 1.0f, 0.0f);
-	const auto combinedMatrix = rotationMatrix * translationMatrix;
-
-	const auto modelViewProjectionMatrix = XMMatrixTranspose(combinedMatrix * args.viewProjectionMatrix);
-
-	commandList->SetGraphicsRoot32BitConstants(0, sizeof(modelViewProjectionMatrix) / sizeof(float), &modelViewProjectionMatrix, 0);
 	
 	// Draw.
-	std::vector<DrawArgs>& drawArgs = args.renderObject.drawArgs;
-	for (UINT i = context; i < drawArgs.size(); i += NumContexts)
+	for(const auto& renderObject : renderObjects)
 	{
-		const DrawArgs& drawArg = drawArgs[i];
+		float angle = args.time * XM_2PI;
+		const auto rotationMatrix = XMMatrixRotationZ(angle);
+		const auto translationMatrix = XMMatrixTranslation(0.0f, 1.0f, 0.0f);
+		const auto combinedMatrix = rotationMatrix * translationMatrix;
 
-		commandList->DrawInstanced(
-			drawArg.vertexCount,
-			1,
-			drawArg.startVertex,
-			drawArg.startInstance
-		);
+		const auto modelViewProjectionMatrix = XMMatrixTranspose(combinedMatrix * args.viewProjectionMatrix);
+
+		commandList->SetGraphicsRoot32BitConstants(0, sizeof(modelViewProjectionMatrix) / sizeof(float), &modelViewProjectionMatrix, 0);
+
+		commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
+
+		const std::vector<DrawArgs>& drawArgs = renderObject.drawArgs;
+		for (UINT i = context; i < drawArgs.size(); i += NumContexts)
+		{
+			const DrawArgs& drawArg = drawArgs[i];
+
+			commandList->DrawInstanced(
+				drawArg.vertexCount,
+				1,
+				drawArg.startVertex,
+				drawArg.startInstance
+			);
+		}
 	}
 }
 
-void IndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, IndexedRenderPassArgs args)
+void IndexedRenderPass::Render(const std::vector<RenderObject>& renderObjects, UINT context, ComPtr<ID3D12Device> device, IndexedRenderPassArgs args)
 {
 	auto& commandList = commandLists[context];
 
@@ -97,8 +100,6 @@ void IndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Indexe
 
 	// Set vertex buffer as triangle list.
 	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	commandList->IASetVertexBuffers(0, 1, &args.renderObject.vertexBufferView);
-	commandList->IASetIndexBuffer(&args.renderObject.indexBufferView);
 
 	// Configure RS.
 	commandList->RSSetViewports(1, &args.viewport);
@@ -107,30 +108,33 @@ void IndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Indexe
 	// Set render target and depth stencil.
 	commandList->OMSetRenderTargets(1, &args.renderTargetView, TRUE, &args.depthStencilView);
 
-	static float t = 0;
-	t += 1 / 144.0f / 2.0f;
-	float angle = t * XM_2PI;
-	//const auto rotationMatrix = XMMatrixRotationX(angle * 1.2f + 1.0f) * XMMatrixRotationY(angle * 0.8f + 1.3f) * XMMatrixRotationZ(angle * 1.0f + 3.0f);
-	const auto rotationMatrix = XMMatrixIdentity();
-	const auto translationMatrix = XMMatrixTranslation(0.0f, 10.0f, 0.0f);
-	const auto scaleMatrix = XMMatrixScaling(0.1f, 0.1f, 0.1f);
-	const auto combinedMatrix = scaleMatrix * rotationMatrix * translationMatrix;
-	const auto modelViewProjectionMatrix = XMMatrixTranspose(combinedMatrix * args.viewProjectionMatrix);
-
-	commandList->SetGraphicsRoot32BitConstants(0, sizeof(modelViewProjectionMatrix) / sizeof(float), &modelViewProjectionMatrix, 0);
-
-	// Draw.
-	std::vector<DrawArgs>& drawArgs = args.renderObject.drawArgs;
-	for (UINT i = context; i < drawArgs.size(); i += NumContexts)
+	for(const auto& renderObject : renderObjects)
 	{
-		const DrawArgs& drawArg = drawArgs[i];
+		float angle = args.time * XM_2PI;
+		const auto rotationMatrix = XMMatrixRotationX(angle * 1.2f + 1.0f) * XMMatrixRotationY(angle * 0.8f + 1.3f) * XMMatrixRotationZ(angle * 1.0f + 3.0f);
+		const auto translationMatrix = XMMatrixTranslation(1.0f, 0.0f, 0.0f);
+		const auto scaleMatrix = XMMatrixScaling(0.1f, 0.1f, 0.1f);
+		const auto combinedMatrix = scaleMatrix * rotationMatrix * translationMatrix;
 
-		commandList->DrawIndexedInstanced(
-			drawArg.indexCount,
-			1,
-			drawArg.startIndex,
-			drawArg.baseVertex,
-			drawArg.startInstance
-		);
+		const auto modelViewProjectionMatrix = XMMatrixTranspose(combinedMatrix * args.viewProjectionMatrix);
+
+		commandList->SetGraphicsRoot32BitConstants(0, sizeof(modelViewProjectionMatrix) / sizeof(float), &modelViewProjectionMatrix, 0);
+		commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
+		commandList->IASetIndexBuffer(&renderObject.indexBufferView);
+
+		// Draw.
+		const std::vector<DrawArgs>& drawArgs = renderObject.drawArgs;
+		for (UINT i = context; i < drawArgs.size(); i += NumContexts)
+		{
+			const DrawArgs& drawArg = drawArgs[i];
+
+			commandList->DrawIndexedInstanced(
+				drawArg.indexCount,
+				1,
+				drawArg.startIndex,
+				drawArg.baseVertex,
+				drawArg.startInstance
+			);
+		}
 	}
 }

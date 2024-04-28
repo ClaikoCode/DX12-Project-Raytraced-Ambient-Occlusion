@@ -71,6 +71,9 @@ DX12Renderer& DX12Renderer::Get()
 
 void DX12Renderer::Render()
 {
+	static float t = 0;
+	t += 1 / 144.0f;
+
 	UINT currBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
 
 	// Store command lists for each render pass.
@@ -168,53 +171,50 @@ void DX12Renderer::Render()
 
 		for (RenderPassType renderPass : renderPassOrder)
 		{
+			DX12RenderPass& pass = *m_renderPasses[renderPass];
+			std::vector<RenderObject>& renderObjects = m_renderObjectsByPipelineState[renderPass];
+
 			if (renderPass == NonIndexedPass)
 			{
-				for(auto& renderObject : m_renderObjectsByPipelineState[NonIndexedPass])
-				{
-					NonIndexedRenderPass& nonIndexedRenderPass = static_cast<NonIndexedRenderPass&>(*m_renderPasses[renderPass]);
-					NonIndexedRenderPass::NonIndexedRenderPassArgs args;
+				NonIndexedRenderPass& nonIndexedRenderPass = static_cast<NonIndexedRenderPass&>(pass);
+				NonIndexedRenderPass::NonIndexedRenderPassArgs args;
 
-					// Add state args.
-					args.renderObject = renderObject;
-					args.renderTargetView = rtv;
-					args.depthStencilView = dsv;
-					args.rootSignature = m_rootSignature;
-					args.viewport = m_viewport;
-					args.scissorRect = m_scissorRect;
+				// Add state args.
+				args.time = t;
+				args.renderTargetView = rtv;
+				args.depthStencilView = dsv;
+				args.rootSignature = m_rootSignature;
+				args.viewport = m_viewport;
+				args.scissorRect = m_scissorRect;
 
-					// Add view projection matrix.
-					args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
+				// Add view projection matrix.
+				args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
 
-					nonIndexedRenderPass.Render(context, m_device, args);
+				nonIndexedRenderPass.Render(renderObjects, context, m_device, args);
 
-					// Signal that pass is done.
-					m_syncHandler.SetPass(context, renderPass);
-				}
+				// Signal that pass is done.
+				m_syncHandler.SetPass(context, renderPass);
 			}
 			else if (renderPass == IndexedPass)
 			{
-				for(auto& renderObject : m_renderObjectsByPipelineState[IndexedPass])
-				{
-					IndexedRenderPass& indexedRenderPass = static_cast<IndexedRenderPass&>(*m_renderPasses[renderPass]);
-					IndexedRenderPass::IndexedRenderPassArgs args;
+				IndexedRenderPass& indexedRenderPass = static_cast<IndexedRenderPass&>(pass);
+				IndexedRenderPass::IndexedRenderPassArgs args;
 
-					// Add state args.
-					args.renderObject = renderObject;
-					args.renderTargetView = rtv;
-					args.depthStencilView = dsv;
-					args.rootSignature = m_rootSignature;
-					args.viewport = m_viewport;
-					args.scissorRect = m_scissorRect;
+				// Add state args.
+				args.time = t;
+				args.renderTargetView = rtv;
+				args.depthStencilView = dsv;
+				args.rootSignature = m_rootSignature;
+				args.viewport = m_viewport;
+				args.scissorRect = m_scissorRect;
 
-					// Add view projection matrix.
-					args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
+				// Add view projection matrix.
+				args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
 
-					indexedRenderPass.Render(context, m_device, args);
+				indexedRenderPass.Render(renderObjects, context, m_device, args);
 
-					// Signal that pass is done.
-					m_syncHandler.SetPass(context, renderPass);
-				}
+				// Signal that pass is done.
+				m_syncHandler.SetPass(context, renderPass);
 			}
 			else
 			{
@@ -659,7 +659,7 @@ void DX12Renderer::InitAssets()
 
 	
 	{
-		std::string modelPath = std::string(AssetsPath) + "pumpkin.obj";
+		std::string modelPath = std::string(AssetsPath) + "teapot.obj";
 		tinyobj::ObjReaderConfig readerConfig = {};
 		tinyobj::ObjReader reader;
 
@@ -701,7 +701,7 @@ void DX12Renderer::InitAssets()
 		m_cameras.push_back(Camera(fov, aspectRatio, nearZ, farZ));
 		m_activeCamera = &m_cameras[0];
 
-		m_activeCamera->SetPosAndDir({ 0.0f, 0.0f, -30.0f }, { 0.0f, 0.0f, 1.0f });
+		m_activeCamera->SetPosAndDir({ 0.0f, 0.0f, -5.0f }, { 0.0f, 0.0f, 1.0f });
 	}
 
 }

@@ -2,6 +2,7 @@
 
 #include "DirectXIncludes.h"
 #include <array>
+#include <vector>
 
 #include "GPUResource.h"
 #include "AppDefines.h"
@@ -38,12 +39,12 @@ class NonIndexedRenderPass : public DX12RenderPass
 public:
 	struct NonIndexedRenderPassArgs
 	{
-		RenderObject renderObject;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE renderTargetView;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE depthStencilView;
 		ComPtr<ID3D12RootSignature> rootSignature;
 		CD3DX12_VIEWPORT viewport;
 		CD3DX12_RECT scissorRect;
+		float time;
 
 		XMMATRIX viewProjectionMatrix;
 	};
@@ -52,7 +53,7 @@ public:
 		: DX12RenderPass(device, pipelineState) {}
 
 
-	void Render(UINT context, ComPtr<ID3D12Device> device, NonIndexedRenderPassArgs args);
+	void Render(const std::vector<RenderObject>& renderObjects, UINT context, ComPtr<ID3D12Device> device, NonIndexedRenderPassArgs args);
 
 };
 
@@ -61,12 +62,12 @@ class IndexedRenderPass : public DX12RenderPass
 public:
 	struct IndexedRenderPassArgs
 	{
-		RenderObject renderObject;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE renderTargetView;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE depthStencilView;
 		ComPtr<ID3D12RootSignature> rootSignature;
 		CD3DX12_VIEWPORT viewport;
 		CD3DX12_RECT scissorRect;
+		float time;
 
 		XMMATRIX viewProjectionMatrix;
 	};
@@ -74,5 +75,5 @@ public:
 	IndexedRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
 		: DX12RenderPass(device, pipelineState) {}
 
-	void Render(UINT context, ComPtr<ID3D12Device> device, IndexedRenderPassArgs args);
+	void Render(const std::vector<RenderObject>& renderObjects, UINT context, ComPtr<ID3D12Device> device, IndexedRenderPassArgs args);
 };
