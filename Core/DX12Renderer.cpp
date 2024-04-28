@@ -5,10 +5,46 @@
 
 #include "GraphicsErrorHandling.h"
 #include "DX12AbstractionUtils.h"
-
+#include "tiny_obj_loader.h"
 
 using namespace DX12Abstractions;
 namespace dx = DirectX;
+
+void ReadObjFile(std::string modelPath, tinyobj::ObjReader& reader, tinyobj::ObjReaderConfig config)
+{
+	if (!reader.ParseFromFile(modelPath, config))
+	{
+		if (!reader.Error().empty())
+		{
+			throw std::runtime_error(reader.Error());
+		}
+		else
+		{
+			throw std::runtime_error("Failed to load model");
+		}
+	}
+
+	if (!reader.Warning().empty())
+	{
+		OutputDebugStringA(reader.Warning().c_str());
+	}
+}
+
+template <typename T>
+void GetObjVertexIndices(std::vector<T>& vertexIndices, tinyobj::ObjReader& reader)
+{
+	auto& attrib = reader.GetAttrib();
+	auto& shapes = reader.GetShapes();
+	auto& materials = reader.GetMaterials();
+
+	for (const auto& shape : shapes)
+	{
+		for (const auto& index : shape.mesh.indices)
+		{
+			vertexIndices.push_back((T)index.vertex_index);
+		}
+	}
+}
 
 DX12Renderer* DX12Renderer::s_instance = nullptr;
 
@@ -129,54 +165,58 @@ void DX12Renderer::Render()
 		{
 			if (renderPass == NonIndexedPass)
 			{
-				NonIndexedRenderPass& triangleRenderPass = static_cast<NonIndexedRenderPass&>(*m_renderPasses[renderPass]);
-				
-				RenderObject& triangleObject = m_renderObjects[0];
-				NonIndexedRenderPass::NonIndexedRenderPassArgs args;
-				
-				// Add state args.
-				args.renderObject = triangleObject;
-				args.renderTargetView = rtv;
-				args.depthStencilView = dsv;
-				args.rootSignature = m_rootSignature;
-				args.viewport = m_viewport;
-				args.scissorRect = m_scissorRect;
-				
-				// Add view projection matrix.
-				args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
-				
-				triangleRenderPass.Render(context, m_device, args);
-				
-				// Signal that pass is done.
-				m_syncHandler.SetPass(context, renderPass);
+				for(auto& renderObject : m_renderObjectsByPipelineState[NonIndexedPass])
+				{
+					NonIndexedRenderPass& nonIndexedRenderPass = static_cast<NonIndexedRenderPass&>(*m_renderPasses[renderPass]);
+					NonIndexedRenderPass::NonIndexedRenderPassArgs args;
+
+					// Add state args.
+					args.renderObject = renderObject;
+					args.renderTargetView = rtv;
+					args.depthStencilView = dsv;
+					args.rootSignature = m_rootSignature;
+					args.viewport = m_viewport;
+					args.scissorRect = m_scissorRect;
+
+					// Add view projection matrix.
+					args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
+
+					nonIndexedRenderPass.Render(context, m_device, args);
+
+					// Signal that pass is done.
+					m_syncHandler.SetPass(context, renderPass);
+				}
 			}
 			else if (renderPass == IndexedPass)
 			{
-				IndexedRenderPass& cubeRenderPass = static_cast<IndexedRenderPass&>(*m_renderPasses[renderPass]);
-				
-				RenderObject& cubeObject = m_renderObjects[1];
-				IndexedRenderPass::IndexedRenderPassArgs args;
-				
-				// Add state args.
-				args.renderObject = cubeObject;
-				args.renderTargetView = rtv;
-				args.depthStencilView = dsv;
-				args.rootSignature = m_rootSignature;
-				args.viewport = m_viewport;
-				args.scissorRect = m_scissorRect;
-				
-				// Add view projection matrix.
-				args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
-				
-				cubeRenderPass.Render(context, m_device, args);
-				
-				// Signal that pass is done.
-				m_syncHandler.SetPass(context, renderPass);
+				for(auto& renderObject : m_renderObjectsByPipelineState[IndexedPass])
+				{
+					IndexedRenderPass& indexedRenderPass = static_cast<IndexedRenderPass&>(*m_renderPasses[renderPass]);
+					IndexedRenderPass::IndexedRenderPassArgs args;
+
+					// Add state args.
+					args.renderObject = renderObject;
+					args.renderTargetView = rtv;
+					args.depthStencilView = dsv;
+					args.rootSignature = m_rootSignature;
+					args.viewport = m_viewport;
+					args.scissorRect = m_scissorRect;
+
+					// Add view projection matrix.
+					args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
+
+					indexedRenderPass.Render(context, m_device, args);
+
+					// Signal that pass is done.
+					m_syncHandler.SetPass(context, renderPass);
+				}
 			}
 			else
 			{
-				// Any future passes can be added here.
+				throw std::runtime_error("Unknown render pass type.");
 			}
+
+			m_renderPasses[renderPass]->Close(context);
 		}
 
 		// Signal end sync.
@@ -470,8 +510,8 @@ void DX12Renderer::InitAssets()
 		ComPtr<ID3DBlob> error;
 		{
 			const HRESULT hr = D3D12SerializeRootSignature(
-				&rootSignatureDesc, 
-				D3D_ROOT_SIGNATURE_VERSION_1, 
+				&rootSignatureDesc,
+				D3D_ROOT_SIGNATURE_VERSION_1,
 				&signature,
 				&error
 			);
@@ -492,9 +532,9 @@ void DX12Renderer::InitAssets()
 
 			// Create the root sig.
 			m_device->CreateRootSignature(
-				0, 
-				signature->GetBufferPointer(), 
-				signature->GetBufferSize(), 
+				0,
+				signature->GetBufferPointer(),
+				signature->GetBufferSize(),
 				IID_PPV_ARGS(&m_rootSignature)
 			) >> CHK_HR;
 
@@ -502,7 +542,7 @@ void DX12Renderer::InitAssets()
 		}
 	}
 
-	
+
 	// Create pipeline state object.
 	{
 		struct PipelineStateStream
@@ -544,7 +584,7 @@ void DX12Renderer::InitAssets()
 			.pPipelineStateSubobjectStream = &pipelineStateStream
 		};
 
-		
+
 		ComPtr<ID3D12PipelineState> pipelineState;
 		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&pipelineState)) >> CHK_HR;
 
@@ -557,7 +597,7 @@ void DX12Renderer::InitAssets()
 		m_syncHandler.AddUniquePassSync(IndexedPass);
 	}
 
-	
+
 
 
 	// Temp command list for setting up the assets.
@@ -565,8 +605,8 @@ void DX12Renderer::InitAssets()
 	// doesn't require a command allocator as input, which usually is replaced either way.
 	ComPtr<ID3D12GraphicsCommandList1> commandList;
 	m_device->CreateCommandList1(
-		0, 
-		D3D12_COMMAND_LIST_TYPE_DIRECT, 
+		0,
+		D3D12_COMMAND_LIST_TYPE_DIRECT,
 		D3D12_COMMAND_LIST_FLAG_NONE,
 		IID_PPV_ARGS(&commandList)
 	) >> CHK_HR;
@@ -576,84 +616,19 @@ void DX12Renderer::InitAssets()
 
 	NAME_D3D12_OBJECT(m_fence);
 
-	// Create vertex buffers.
-	struct Vertex
 	{
-		dx::XMFLOAT3 position;
-		dx::XMFLOAT3 color;
-	};
-
-	RenderObject nonIndexedObject;
-	{
-		std::array<Vertex, 3> triangleData{ {
+		std::vector<Vertex> triangleData{ {
 			{ { 0.0f, 0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f } }, // top
 			{ { 0.43f, -0.25f, 0.0f }, { 0.0f, 0.0f, 1.0f } }, // right
 			{ { -0.43f, -0.25f, 0.0f }, { 0.0f, 1.0f, 0.0f } } // left
 		} };
 
-		UINT vertexCount = (UINT)triangleData.size();
-		UINT vertexBufferSize = sizeof(triangleData);
-
-		GPUResource vertexUploadBuffer;
-		{
-			CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
-
-			vertexUploadBuffer = CreateUploadResource(m_device, bufferDesc);
-
-			nonIndexedObject.vertexBuffer = CreateDefaultResource(m_device, bufferDesc);
-		}
-
-		// Copy the data onto GPU memory.
-		{
-			Vertex* mappedVertexData = nullptr;
-			vertexUploadBuffer.resource->Map(0, nullptr, reinterpret_cast<void**>(&mappedVertexData)) >> CHK_HR;
-			std::ranges::copy(triangleData, mappedVertexData);
-			vertexUploadBuffer.resource->Unmap(0, nullptr);
-		}
-
-		// Reset command list and allocator.
-		m_commandAllocator->Reset() >> CHK_HR;
-		commandList->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
-
-		// Copy data from upload buffer into vertex buffer.
-		commandList->CopyResource(nonIndexedObject.vertexBuffer.Get(), vertexUploadBuffer.Get());
-		nonIndexedObject.vertexBuffer.TransitionTo(D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, commandList);
-
-		// Close when done.
-		commandList->Close() >> CHK_HR;
-
-		std::array<ID3D12CommandList* const, 1> commandLists = { commandList.Get() };
-		m_commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
-
-		m_commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
-		// Wait until the command queue is done.
-		m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
-
-		// Create vertex buffer view.
-		auto& vbView = nonIndexedObject.vertexBufferView;
-		{
-			vbView.BufferLocation = nonIndexedObject.vertexBuffer.resource->GetGPUVirtualAddress();
-			vbView.StrideInBytes = sizeof(Vertex);
-			vbView.SizeInBytes = vertexBufferSize;
-		}
-
-		// Add to render objects.
-		DrawArgs triangleDrawArgs = {
-			.vertexCount = vertexCount,
-			.startVertex = 0,
-			.indexCount = 0,
-			.startIndex = 0
-		};
-		nonIndexedObject.drawArgs.push_back(triangleDrawArgs);
-		m_renderObjects.push_back(nonIndexedObject);
+		RenderObject nonIndexedObject = CreateRenderObject(&triangleData, nullptr);
+		m_renderObjectsByPipelineState[NonIndexedPass].push_back(nonIndexedObject);
 	}
 
-
-	RenderObject cube;
 	{
-		UINT vertexCount = 0;
-		{
-			std::array<Vertex, 8> cubeData{ {
+		std::vector<Vertex> cubeData{ {
 			{ { -1.0f, -1.0f, -1.0f }, { 0.0f, 0.0f, 0.0f } }, // 0
 			{ { -1.0f,  1.0f, -1.0f }, { 0.0f, 1.0f, 0.0f } }, // 1
 			{ {  1.0f,  1.0f, -1.0f }, { 1.0f, 1.0f, 0.0f } }, // 2
@@ -664,137 +639,162 @@ void DX12Renderer::InitAssets()
 			{ {  1.0f, -1.0f,  1.0f }, { 1.0f, 0.0f, 1.0f } }  // 7
 			} };
 
-			vertexCount = (UINT)cubeData.size();
-			UINT vertexBufferSize = sizeof(cubeData);
-
-			GPUResource vertexUploadBuffer;
-			{
-				CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
-
-				vertexUploadBuffer = CreateUploadResource(m_device, bufferDesc);
-
-				cube.vertexBuffer = CreateDefaultResource(m_device, bufferDesc);
-			}
-
-			// Copy the data onto GPU memory.
-			{
-				Vertex* mappedVertexData = nullptr;
-				vertexUploadBuffer.resource->Map(0, nullptr, reinterpret_cast<void**>(&mappedVertexData)) >> CHK_HR;
-				std::ranges::copy(cubeData, mappedVertexData);
-				vertexUploadBuffer.resource->Unmap(0, nullptr);
-			}
-
-			// Reset command list and allocator.
-			m_commandAllocator->Reset() >> CHK_HR;
-			commandList->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
-
-			// Copy data from upload buffer into index buffer.
-			commandList->CopyResource(cube.vertexBuffer.Get(), vertexUploadBuffer.Get());
-			cube.vertexBuffer.TransitionTo(D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, commandList);
-
-			// Close when done.
-			commandList->Close() >> CHK_HR;
-
-			std::array<ID3D12CommandList* const, 1> commandLists = { commandList.Get() };
-			m_commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
-
-			m_commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
-
-			// Wait until the command queue is done.
-			m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
-
-			// Create vertex buffer view.
-			auto& vbView = cube.vertexBufferView;
-			{
-				vbView.BufferLocation = cube.vertexBuffer.resource->GetGPUVirtualAddress();
-				vbView.StrideInBytes = sizeof(Vertex);
-				vbView.SizeInBytes = vertexBufferSize;
-			}
-		}
-
-		UINT indexCount = 0;
-		{
-			// Create index buffer.
-			std::array<uint32_t, 36> cubeIndices = {
+		std::vector<uint32_t> cubeIndices = {
 				0, 1, 2, 0, 2, 3, // front face
 				4, 6, 5, 4, 7, 6, // back face
 				4, 5, 1, 4, 1, 0, // left face
 				3, 2, 6, 3, 6, 7, // right face
 				1, 5, 6, 1, 6, 2, // top face
 				4, 0, 3, 4, 3, 7  // bottom face
-			};
-
-			indexCount = (UINT)cubeIndices.size();
-
-			GPUResource indexUploadBuffer;
-			{
-				CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(cubeIndices));
-
-				indexUploadBuffer = CreateUploadResource(m_device, bufferDesc);
-
-				cube.indexBuffer = CreateDefaultResource(m_device, bufferDesc);
-			}
-
-			// Copy the data onto GPU memory.
-			{
-				uint32_t* mappedIndexData = nullptr;
-				indexUploadBuffer.resource->Map(0, nullptr, reinterpret_cast<void**>(&mappedIndexData)) >> CHK_HR;
-				std::ranges::copy(cubeIndices, mappedIndexData);
-				indexUploadBuffer.resource->Unmap(0, nullptr);
-			}
-
-			// Reset command list and allocator.
-			m_commandAllocator->Reset() >> CHK_HR;
-			commandList->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
-
-			// Copy data from upload buffer into index buffer.
-			commandList->CopyResource(cube.indexBuffer.Get(), indexUploadBuffer.Get());
-			cube.indexBuffer.TransitionTo(D3D12_RESOURCE_STATE_INDEX_BUFFER, commandList);
-
-			// Close when done.
-			commandList->Close() >> CHK_HR;
-
-			std::array<ID3D12CommandList* const, 1> commandLists = { commandList.Get() };
-			m_commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
-
-			m_commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
-
-			// Wait until the command queue is done.
-			m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
-
-			// Create index buffer view.
-			auto& ibView = cube.indexBufferView;
-			{
-				ibView.BufferLocation = cube.indexBuffer.resource->GetGPUVirtualAddress();
-				ibView.Format = DXGI_FORMAT_R32_UINT;
-				ibView.SizeInBytes = sizeof(cubeIndices);
-			}
-		}
-
-		// Add to render objects.
-		DrawArgs cubeDrawArgs = {
-			.vertexCount = vertexCount,
-			.startVertex = 0,
-			.indexCount = indexCount,
-			.startIndex = 0
 		};
 
-		cube.drawArgs.push_back(cubeDrawArgs);
-		m_renderObjects.push_back(cube);
+		RenderObject cube =	CreateRenderObject(&cubeData, &cubeIndices);
+		m_renderObjectsByPipelineState[IndexedPass].push_back(cube);
+	}
+
+	
+	{
+		std::string modelPath = std::string(AssetsPath) + "pumpkin.obj";
+		tinyobj::ObjReaderConfig readerConfig = {};
+		tinyobj::ObjReader reader;
+
+		ReadObjFile(modelPath, reader, readerConfig);
+
+		auto& attrib = reader.GetAttrib();
+		auto& shapes = reader.GetShapes();
+		auto& materials = reader.GetMaterials();
+
+		std::vector<uint32_t> indices;
+		GetObjVertexIndices(indices, reader);
+
+		std::vector<Vertex> vertices;
+		for (UINT vertexStart = 0; vertexStart < attrib.vertices.size(); vertexStart += 3)
+		{
+			Vertex vertex = {};
+			vertex.position = {
+				attrib.vertices[vertexStart + 0],
+				attrib.vertices[vertexStart + 1],
+				attrib.vertices[vertexStart + 2]
+			};
+
+			vertex.color = { 1.0f, 0.0f, 0.0f };
+
+			vertices.push_back(vertex);
+		}
+
+		RenderObject pumpkin = CreateRenderObject(&vertices, &indices);
+		m_renderObjectsByPipelineState[IndexedPass].push_back(pumpkin);
 	}
 
 	// Initialize camera.
 	{
 		const float aspectRatio = static_cast<float>(m_width) / static_cast<float>(m_height);
 		const float nearZ = 0.01f;
-		const float farZ = 100.0f;
-		const float fov = XM_PIDIV4;
+		const float farZ = 1000.0f;
+		const float fov = XMConvertToRadians(90.0f);
 
 		m_cameras.push_back(Camera(fov, aspectRatio, nearZ, farZ));
 		m_activeCamera = &m_cameras[0];
 
-		m_activeCamera->SetPosAndDir({ 0.0f, 0.0f, -10.0f }, { 0.0f, 0.0f, 1.0f });
+		m_activeCamera->SetPosAndDir({ 0.0f, 0.0f, -30.0f }, { 0.0f, 0.0f, 1.0f });
 	}
 
+}
+
+RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices)
+{
+	RenderObject renderObject;
+
+	ComPtr<ID3D12GraphicsCommandList1> commandList;
+	m_device->CreateCommandList1(
+		0,
+		D3D12_COMMAND_LIST_TYPE_DIRECT,
+		D3D12_COMMAND_LIST_FLAG_NONE,
+		IID_PPV_ARGS(&commandList)
+	) >> CHK_HR;
+
+	// Reset command list and allocator.
+	m_commandAllocator->Reset() >> CHK_HR;
+	commandList->Reset(m_commandAllocator.Get(), nullptr) >> CHK_HR;
+
+	UINT vertexCount = 0;
+	UINT vertexBufferSize = 0;
+	GPUResource vertexUploadBuffer;
+	if(vertices != nullptr)
+	{
+		vertexCount = (UINT)vertices->size();
+		vertexBufferSize = sizeof(vertices->at(0)) * vertexCount;
+
+		UploadResource<Vertex>(
+			m_device,
+			commandList,
+			renderObject.vertexBuffer,
+			vertexUploadBuffer,
+			vertices->data(),
+			vertexBufferSize
+		);
+
+		// Create vertex buffer view.
+		auto& vbView = renderObject.vertexBufferView;
+		{
+			vbView.BufferLocation = renderObject.vertexBuffer.resource->GetGPUVirtualAddress();
+			vbView.StrideInBytes = sizeof(vertices->at(0));
+			vbView.SizeInBytes = vertexBufferSize;
+		}
+
+		renderObject.vertexBuffer.TransitionTo(D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, commandList);
+	}
+
+	UINT indexCount = 0;
+	UINT indexBufferSize = 0;
+	GPUResource indexUploadBuffer;
+	if(indices != nullptr)
+	{
+		indexCount = (UINT)indices->size();
+		indexBufferSize = sizeof(indices->at(0)) * indexCount;
+
+		UploadResource<uint32_t>(
+			m_device,
+			commandList,
+			renderObject.indexBuffer,
+			indexUploadBuffer,
+			indices->data(),
+			indexBufferSize
+		);
+
+		// Create index buffer view.
+		auto& ibView = renderObject.indexBufferView;
+		{
+			ibView.BufferLocation = renderObject.indexBuffer.resource->GetGPUVirtualAddress();
+			ibView.Format = DXGI_FORMAT_R32_UINT;
+			ibView.SizeInBytes = indexBufferSize;
+		}
+
+		renderObject.indexBuffer.TransitionTo(D3D12_RESOURCE_STATE_INDEX_BUFFER, commandList);
+	}
+
+	// Close when done.
+	commandList->Close() >> CHK_HR;
+
+	std::array<ID3D12CommandList* const, 1> commandLists = { commandList.Get() };
+	m_commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
+
+	m_commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
+
+	// Wait until the command queue is done.
+	m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
+	
+
+	// Add to render objects.
+	DrawArgs drawArgs = {
+		.vertexCount = vertexCount,
+		.startVertex = 0,
+		.indexCount = indexCount,
+		.startIndex = 0
+	};
+
+	renderObject.drawArgs.push_back(drawArgs);
+
+	return renderObject;
 }
 

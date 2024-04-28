@@ -18,6 +18,13 @@ constexpr UINT BufferCount = 2;
 
 typedef UINT ShaderPipelineStateType;
 
+// Create vertex buffers.
+struct Vertex
+{
+	DirectX::XMFLOAT3 position;
+	DirectX::XMFLOAT3 color;
+};
+
 // Singleton class designed with a public constructor that only is allowed to be called once.
 class DX12Renderer
 {
@@ -39,6 +46,8 @@ private:
 
 	void InitPipeline();
 	void InitAssets();
+
+	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices);
 
 private:
 
@@ -73,7 +82,7 @@ private:
 	UINT m_fenceValue;
 	DX12SyncHandler m_syncHandler;
 
-	std::vector<RenderObject> m_renderObjects;
+	std::unordered_map<ShaderPipelineStateType, std::vector<RenderObject>> m_renderObjectsByPipelineState;
 
 	Camera* m_activeCamera;
 	std::vector<Camera> m_cameras;

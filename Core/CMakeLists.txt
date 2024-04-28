@@ -5,8 +5,8 @@ add_executable(Core WIN32 "Main.cpp" "Window.cpp" "App.cpp" "DirectXIncludes.h" 
 set_property(TARGET Core PROPERTY VS_DEBUGGER_WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 add_dependencies(Core Shaders)
-target_compile_definitions(Core PRIVATE _UNICODE UNICODE _WIN32_WINNT=0x0A00)
-target_link_libraries(Core DirectX-Headers d3d12 dxcore dxgi d3dcompiler)
+target_compile_definitions(Core PRIVATE _UNICODE UNICODE _WIN32_WINNT=0x0A00 TINYOBJLOADER_IMPLEMENTATION)
+target_link_libraries(Core PRIVATE DirectX-Headers tinyobjloader d3d12 dxcore dxgi d3dcompiler)
 
 
 

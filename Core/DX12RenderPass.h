@@ -21,6 +21,7 @@ public:
 	~DX12RenderPass() = default;
 
 	void Init();
+	void Close(UINT context);
 
 public:
 

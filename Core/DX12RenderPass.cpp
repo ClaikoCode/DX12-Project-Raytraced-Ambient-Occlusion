@@ -37,6 +37,11 @@ void DX12RenderPass::Init()
 
 }
 
+void DX12RenderPass::Close(UINT context)
+{
+	commandLists[context]->Close() >> CHK_HR;
+}
+
 void NonIndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, NonIndexedRenderPassArgs args)
 {
 	auto& commandList = commandLists[context];
@@ -80,9 +85,6 @@ void NonIndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Non
 			drawArg.startInstance
 		);
 	}
-
-	// Finish off by closing the command list.
-	commandList->Close() >> CHK_HR;
 }
 
 void IndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, IndexedRenderPassArgs args)
@@ -105,12 +107,15 @@ void IndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Indexe
 	// Set render target and depth stencil.
 	commandList->OMSetRenderTargets(1, &args.renderTargetView, TRUE, &args.depthStencilView);
 
-
 	static float t = 0;
-	t += 1 / 144.0f;
+	t += 1 / 144.0f / 2.0f;
 	float angle = t * XM_2PI;
-	const auto rotationMatrix = XMMatrixRotationX(angle * 1.2f + 1.0f) * XMMatrixRotationY(angle * 0.8f + 1.3f) * XMMatrixRotationZ(angle * 1.0f + 3.0f);
-	const auto modelViewProjectionMatrix = XMMatrixTranspose(rotationMatrix * args.viewProjectionMatrix);
+	//const auto rotationMatrix = XMMatrixRotationX(angle * 1.2f + 1.0f) * XMMatrixRotationY(angle * 0.8f + 1.3f) * XMMatrixRotationZ(angle * 1.0f + 3.0f);
+	const auto rotationMatrix = XMMatrixIdentity();
+	const auto translationMatrix = XMMatrixTranslation(0.0f, 10.0f, 0.0f);
+	const auto scaleMatrix = XMMatrixScaling(0.1f, 0.1f, 0.1f);
+	const auto combinedMatrix = scaleMatrix * rotationMatrix * translationMatrix;
+	const auto modelViewProjectionMatrix = XMMatrixTranspose(combinedMatrix * args.viewProjectionMatrix);
 
 	commandList->SetGraphicsRoot32BitConstants(0, sizeof(modelViewProjectionMatrix) / sizeof(float), &modelViewProjectionMatrix, 0);
 
@@ -128,8 +133,4 @@ void IndexedRenderPass::Render(UINT context, ComPtr<ID3D12Device> device, Indexe
 			drawArg.startInstance
 		);
 	}
-
-	// Finish off by closing the command list.
-	commandList->Close() >> CHK_HR;
-
 }

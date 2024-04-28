@@ -1,4 +1,7 @@
 #include "GPUResource.h"
+
+#include <array>
+
 #include "GraphicsErrorHandling.h"
 #include "DX12AbstractionUtils.h"
 
@@ -57,6 +60,8 @@ namespace DX12Abstractions
 			IID_PPV_ARGS(&resource)
 		) >> CHK_HR;
 
+		NAME_D3D12_OBJECT(resource);
+
 		return resource;
 	}
 
@@ -69,4 +74,6 @@ namespace DX12Abstractions
 	{
 		return CreateResource(device, resourceDesc, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_HEAP_TYPE_DEFAULT);
 	}
+
 }
+  
