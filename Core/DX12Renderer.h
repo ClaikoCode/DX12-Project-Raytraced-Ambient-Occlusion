@@ -49,7 +49,7 @@ private:
 	void InitPipeline();
 	void InitAssets();
 
-	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices);
+	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology);
 
 private:
 

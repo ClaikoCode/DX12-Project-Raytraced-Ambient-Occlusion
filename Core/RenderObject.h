@@ -28,4 +28,5 @@ struct RenderObject
 	D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
 
 	std::vector<DrawArgs> drawArgs;
+	D3D12_PRIMITIVE_TOPOLOGY topology;
 };

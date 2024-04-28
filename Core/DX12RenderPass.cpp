@@ -50,8 +50,7 @@ void NonIndexedRenderPass::Render(const std::vector<RenderObject>& renderObjects
 	commandList->SetGraphicsRootSignature(args.rootSignature.Get());
 	commandList->SetPipelineState(m_pipelineState.Get());
 	
-	// Set vertex buffer as triangle list.
-	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	
 	
 
 	// Configure RS.
@@ -73,6 +72,8 @@ void NonIndexedRenderPass::Render(const std::vector<RenderObject>& renderObjects
 
 		commandList->SetGraphicsRoot32BitConstants(0, sizeof(modelViewProjectionMatrix) / sizeof(float), &modelViewProjectionMatrix, 0);
 
+		// Set vertex buffer as triangle list.
+		commandList->IASetPrimitiveTopology(renderObject.topology);
 		commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
 
 		const std::vector<DrawArgs>& drawArgs = renderObject.drawArgs;
@@ -98,9 +99,6 @@ void IndexedRenderPass::Render(const std::vector<RenderObject>& renderObjects, U
 	commandList->SetGraphicsRootSignature(args.rootSignature.Get());
 	commandList->SetPipelineState(m_pipelineState.Get());
 
-	// Set vertex buffer as triangle list.
-	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
 	// Configure RS.
 	commandList->RSSetViewports(1, &args.viewport);
 	commandList->RSSetScissorRects(1, &args.scissorRect);
@@ -119,6 +117,9 @@ void IndexedRenderPass::Render(const std::vector<RenderObject>& renderObjects, U
 		const auto modelViewProjectionMatrix = XMMatrixTranspose(combinedMatrix * args.viewProjectionMatrix);
 
 		commandList->SetGraphicsRoot32BitConstants(0, sizeof(modelViewProjectionMatrix) / sizeof(float), &modelViewProjectionMatrix, 0);
+		
+		// Set vertex buffer as triangle list.
+		commandList->IASetPrimitiveTopology(renderObject.topology);
 		commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
 		commandList->IASetIndexBuffer(&renderObject.indexBufferView);
 

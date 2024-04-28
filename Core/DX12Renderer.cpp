@@ -628,7 +628,7 @@ void DX12Renderer::InitAssets()
 			{ { -0.43f, -0.25f, 0.0f }, { 0.0f, 1.0f, 0.0f } } // left
 		} };
 
-		RenderObject nonIndexedObject = CreateRenderObject(&triangleData, nullptr);
+		RenderObject nonIndexedObject = CreateRenderObject(&triangleData, nullptr, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		m_renderObjectsByPipelineState[NonIndexedPass].push_back(nonIndexedObject);
 	}
 
@@ -653,7 +653,7 @@ void DX12Renderer::InitAssets()
 				4, 0, 3, 4, 3, 7  // bottom face
 		};
 
-		RenderObject cube =	CreateRenderObject(&cubeData, &cubeIndices);
+		RenderObject cube =	CreateRenderObject(&cubeData, &cubeIndices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		m_renderObjectsByPipelineState[IndexedPass].push_back(cube);
 	}
 
@@ -687,7 +687,7 @@ void DX12Renderer::InitAssets()
 			vertices.push_back(vertex);
 		}
 
-		RenderObject pumpkin = CreateRenderObject(&vertices, &indices);
+		RenderObject pumpkin = CreateRenderObject(&vertices, &indices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		m_renderObjectsByPipelineState[IndexedPass].push_back(pumpkin);
 	}
 
@@ -706,7 +706,7 @@ void DX12Renderer::InitAssets()
 
 }
 
-RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices)
+RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
 	RenderObject renderObject;
 
@@ -799,6 +799,7 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 	};
 
 	renderObject.drawArgs.push_back(drawArgs);
+	renderObject.topology = topology;
 
 	return renderObject;
 }
