@@ -20,11 +20,23 @@ typedef UINT ShaderPipelineStateType;
 
 template<typename T> DXGI_FORMAT GetDXGIFormat() { throw std::exception("Unsupported type"); }
 
-// Create vertex buffers.
+// TODO: move this to a more appropriate place.
 struct Vertex
 {
 	DirectX::XMFLOAT3 position;
 	DirectX::XMFLOAT3 color;
+};
+
+struct CommandQueueHandler
+{
+	CommandQueueHandler() = default;
+	CommandQueueHandler(ID3D12Device* device, D3D12_COMMAND_LIST_TYPE type);
+
+	ComPtr<ID3D12CommandQueue> commandQueue;
+	ComPtr<ID3D12CommandAllocator> commandAllocator;
+
+private:
+	D3D12_COMMAND_LIST_TYPE m_type;
 };
 
 // Singleton class designed with a public constructor that only is allowed to be called once.
@@ -50,7 +62,7 @@ private:
 	void CreateDeviceAndSwapChain();
 	void CreateRTVHeap();
 	void CreateRTVs();
-	void CreeateDepthBuffer();
+	void CreateDepthBuffer();
 	void CreateDSVHeap();
 	void CreateDSV();
 
@@ -58,6 +70,7 @@ private:
 	void InitAssets();
 	void CreateRootSignatures();
 	void CreatePSOs();
+	void CreateFence();
 	void CreateRenderObjects();
 	void CreateCamera();
 
@@ -75,10 +88,12 @@ private:
 	ComPtr<IDXGISwapChain3> m_swapChain;
 	ComPtr<ID3D12Device5> m_device;
 	// Command queue only to be used by the main thread.
-	ComPtr<ID3D12CommandQueue> m_commandQueue;
-	// This command allocator is only used for work that the main thread will do.
+	ComPtr<ID3D12CommandQueue> m_directQueue;
+	ComPtr<ID3D12CommandQueue> m_copyQueue;
+	// Command allocators are only used for work that the main thread will do.
 	// It is supposed to only be used with temporary command lists.
-	ComPtr<ID3D12CommandAllocator> m_commandAllocator;
+	ComPtr<ID3D12CommandAllocator> m_directCommandAllocator;
+	ComPtr<ID3D12CommandAllocator> m_copyCommandAllocator;
 
 	ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
 	UINT m_rtvDescriptorSize;

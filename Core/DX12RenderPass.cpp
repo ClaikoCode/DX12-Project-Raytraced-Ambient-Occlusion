@@ -50,9 +50,6 @@ void NonIndexedRenderPass::Render(const std::vector<RenderObject>& renderObjects
 	commandList->SetGraphicsRootSignature(args.rootSignature.Get());
 	commandList->SetPipelineState(m_pipelineState.Get());
 	
-	
-	
-
 	// Configure RS.
 	commandList->RSSetViewports(1, &args.viewport);
 	commandList->RSSetScissorRects(1, &args.scissorRect);

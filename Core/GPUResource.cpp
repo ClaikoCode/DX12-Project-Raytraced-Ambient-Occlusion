@@ -60,7 +60,7 @@ namespace DX12Abstractions
 			IID_PPV_ARGS(&resource)
 		) >> CHK_HR;
 
-		NAME_D3D12_OBJECT(resource);
+		NAME_D3D12_OBJECT_MEMBER(resource, GPUResource);
 
 		return resource;
 	}

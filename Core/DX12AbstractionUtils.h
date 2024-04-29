@@ -47,4 +47,6 @@ namespace DX12Abstractions
 // Assigns the name of the variable as the name of the object.
 // The indexed variant will include the index in the name of the object.
 #define NAME_D3D12_OBJECT(x) DX12Abstractions::SetName((x).Get(), L#x)
+#define NAME_D3D12_OBJECT_MEMBER(x, className) DX12Abstractions::SetName((x).Get(), L#className L"::" L#x)
 #define NAME_D3D12_OBJECT_INDEXED(x, n) DX12Abstractions::SetNameIndexed((x)[n].Get(), L#x, n)
+#define NAME_D3D12_OBJECT_MEMBER_INDEXED(x, n, className) DX12Abstractions::SetNameIndexed((x)[n].Get(), L#className L"::" L#x, n)
