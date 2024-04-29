@@ -24,6 +24,7 @@ template<typename T> DXGI_FORMAT GetDXGIFormat() { throw std::exception("Unsuppo
 struct Vertex
 {
 	DirectX::XMFLOAT3 position;
+	DirectX::XMFLOAT3 normal;
 	DirectX::XMFLOAT3 color;
 };
 
@@ -90,6 +91,7 @@ private:
 	void CreateCamera();
 
 	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology);
+	RenderObject CreateRenderObjectFromOBJ(const std::string& objPath, D3D12_PRIMITIVE_TOPOLOGY topology);
 
 private:
 

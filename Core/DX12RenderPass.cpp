@@ -106,9 +106,10 @@ void IndexedRenderPass::Render(const std::vector<RenderObject>& renderObjects, U
 	for(const auto& renderObject : renderObjects)
 	{
 		float angle = args.time * XM_2PI;
-		const auto rotationMatrix = XMMatrixRotationX(angle * 1.2f + 1.0f) * XMMatrixRotationY(angle * 0.8f + 1.3f) * XMMatrixRotationZ(angle * 1.0f + 3.0f);
+		//const auto rotationMatrix = XMMatrixRotationX(angle * 1.2f + 1.0f) * XMMatrixRotationY(angle * 0.8f + 1.3f) * XMMatrixRotationZ(angle * 1.0f + 3.0f);
+		const auto rotationMatrix = XMMatrixIdentity();
 		const auto translationMatrix = XMMatrixTranslation(1.0f, 0.0f, 0.0f);
-		const auto scaleMatrix = XMMatrixScaling(0.1f, 0.1f, 0.1f);
+		const auto scaleMatrix = XMMatrixScaling(1.0f, 1.0f, 1.0f);
 		const auto combinedMatrix = scaleMatrix * rotationMatrix * translationMatrix;
 
 		const auto modelViewProjectionMatrix = XMMatrixTranspose(combinedMatrix * args.viewProjectionMatrix);

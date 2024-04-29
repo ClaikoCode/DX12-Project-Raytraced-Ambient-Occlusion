@@ -7,6 +7,7 @@ struct VSOut
 struct VSIn
 {
     float3 pos : POSITION;
+    float3 normal : NORMAL;
     float3 color : COLOR;
 };
 
@@ -22,7 +23,7 @@ VSOut main(VSIn input)
     VSOut output = (VSOut) 0;
     
     output.pos = mul(float4(input.pos, 1.0f), rot.transform);
-    output.color = float4(input.color, 1.0f);
+    output.color = float4(input.normal, 1.0f);
 
     return output;
 }

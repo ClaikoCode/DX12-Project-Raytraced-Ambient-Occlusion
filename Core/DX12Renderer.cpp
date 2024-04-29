@@ -541,6 +541,7 @@ void DX12Renderer::CreatePSOs()
 
 	const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 		{ "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
 	};
 
@@ -616,41 +617,14 @@ void DX12Renderer::CreateRenderObjects()
 		};
 
 		RenderObject cube = CreateRenderObject(&cubeData, &cubeIndices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		m_renderObjectsByPipelineState[IndexedPass].push_back(cube);
+		//m_renderObjectsByPipelineState[IndexedPass].push_back(cube);
 	}
 
-
+	// Add obj model.
 	{
 		std::string modelPath = std::string(AssetsPath) + "teapot.obj";
-		tinyobj::ObjReaderConfig readerConfig = {};
-		tinyobj::ObjReader reader;
-
-		ReadObjFile(modelPath, reader, readerConfig);
-
-		auto& attrib = reader.GetAttrib();
-		auto& shapes = reader.GetShapes();
-		auto& materials = reader.GetMaterials();
-
-		std::vector<uint32_t> indices;
-		GetObjVertexIndices(indices, reader);
-
-		std::vector<Vertex> vertices;
-		for (UINT vertexStart = 0; vertexStart < attrib.vertices.size(); vertexStart += 3)
-		{
-			Vertex vertex = {};
-			vertex.position = {
-				attrib.vertices[vertexStart + 0],
-				attrib.vertices[vertexStart + 1],
-				attrib.vertices[vertexStart + 2]
-			};
-
-			vertex.color = { 1.0f, 0.0f, 0.0f };
-
-			vertices.push_back(vertex);
-		}
-
-		RenderObject pumpkin = CreateRenderObject(&vertices, &indices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		m_renderObjectsByPipelineState[IndexedPass].push_back(pumpkin);
+		RenderObject object = CreateRenderObjectFromOBJ(modelPath, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		m_renderObjectsByPipelineState[IndexedPass].push_back(object);
 	}
 }
 
@@ -770,6 +744,62 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 	renderObject.topology = topology;
 
 	return renderObject;
+}
+
+RenderObject DX12Renderer::CreateRenderObjectFromOBJ(const std::string& objPath, D3D12_PRIMITIVE_TOPOLOGY topology)
+{
+	tinyobj::ObjReaderConfig readerConfig = {};
+	readerConfig.triangulate = true;
+	tinyobj::ObjReader reader;
+
+	ReadObjFile(objPath, reader, readerConfig);
+
+	auto& attrib = reader.GetAttrib();
+	auto& shapes = reader.GetShapes();
+	auto& materials = reader.GetMaterials();
+
+	std::vector<uint32_t> indices;
+	GetObjVertexIndices(indices, reader);
+
+	std::vector<Vertex> vertices;
+	vertices.resize(attrib.vertices.size() / 3);
+	std::set<UINT> createdVertexIndices;
+
+	for (size_t s = 0; s < shapes.size(); s++)
+	{
+		for (auto& indexInfo : shapes[s].mesh.indices)
+		{
+			auto vertexIndex = indexInfo.vertex_index;
+			auto normalIndex = indexInfo.normal_index;
+
+			if (createdVertexIndices.find(vertexIndex) == createdVertexIndices.end())
+			{
+				Vertex vertex = {};
+				vertex.position = {
+					attrib.vertices[3 * vertexIndex + 0],
+					attrib.vertices[3 * vertexIndex + 1],
+					attrib.vertices[3 * vertexIndex + 2]
+				};
+
+				if (normalIndex != -1)
+				{
+					vertex.normal = {
+						attrib.normals[3 * normalIndex + 0],
+						attrib.normals[3 * normalIndex + 1],
+						attrib.normals[3 * normalIndex + 2]
+					};
+				}
+
+				vertex.color = { 1.0f, 1.0f, 1.0f };
+
+				vertices[vertexIndex] = vertex;
+				createdVertexIndices.insert(vertexIndex);
+			}
+		}
+
+	}
+
+	return CreateRenderObject(&vertices, &indices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 }
 
 CommandQueueHandler::CommandQueueHandler(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE type)
