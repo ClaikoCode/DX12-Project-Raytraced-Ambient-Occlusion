@@ -507,6 +507,7 @@ void DX12Renderer::InitAssets()
 {
 	CreateRootSignatures();
 	CreatePSOs();
+	CreateFence();
 	CreateRenderObjects();
 	CreateCamera();
 }
@@ -617,6 +618,14 @@ void DX12Renderer::CreatePSOs()
 	m_syncHandler.AddUniquePassSync(IndexedPass);
 }
 
+void DX12Renderer::CreateFence()
+{
+	// Create fence.
+	m_device->CreateFence(m_fenceValue, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)) >> CHK_HR;
+
+	NAME_D3D12_OBJECT(m_fence);
+}
+
 void DX12Renderer::CreateRenderObjects()
 {
 	// Temp command list for setting up the assets.
@@ -629,11 +638,6 @@ void DX12Renderer::CreateRenderObjects()
 		D3D12_COMMAND_LIST_FLAG_NONE,
 		IID_PPV_ARGS(&commandList)
 	) >> CHK_HR;
-
-	// Create fence.
-	m_device->CreateFence(m_fenceValue, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)) >> CHK_HR;
-
-	NAME_D3D12_OBJECT(m_fence);
 
 	{
 		std::vector<Vertex> triangleData{ {
