@@ -27,13 +27,22 @@ struct Vertex
 	DirectX::XMFLOAT3 color;
 };
 
-struct CommandQueueHandler
+class CommandQueueHandler
 {
+public:
 	CommandQueueHandler() = default;
-	CommandQueueHandler(ID3D12Device* device, D3D12_COMMAND_LIST_TYPE type);
+	CommandQueueHandler(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE type);
 
 	ComPtr<ID3D12CommandQueue> commandQueue;
 	ComPtr<ID3D12CommandAllocator> commandAllocator;
+
+	ComPtr<ID3D12GraphicsCommandList1> CreateCommandList(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_FLAGS flags = D3D12_COMMAND_LIST_FLAG_NONE);
+
+	ID3D12CommandQueue* Get() const;
+
+	void Reset();
+	// Assumes that the command list used is a command list previously created by this class.
+	void ResetCommandList(ComPtr<ID3D12GraphicsCommandList1> commandList);
 
 private:
 	D3D12_COMMAND_LIST_TYPE m_type;
@@ -87,13 +96,10 @@ private:
 	CD3DX12_VIEWPORT m_viewport;
 	ComPtr<IDXGISwapChain3> m_swapChain;
 	ComPtr<ID3D12Device5> m_device;
-	// Command queue only to be used by the main thread.
-	ComPtr<ID3D12CommandQueue> m_directQueue;
-	ComPtr<ID3D12CommandQueue> m_copyQueue;
-	// Command allocators are only used for work that the main thread will do.
-	// It is supposed to only be used with temporary command lists.
-	ComPtr<ID3D12CommandAllocator> m_directCommandAllocator;
-	ComPtr<ID3D12CommandAllocator> m_copyCommandAllocator;
+	
+	// Command queues that are to be used by the main thread.
+	CommandQueueHandler m_directCommandQueue;
+	CommandQueueHandler m_copyCommandQueue;
 
 	ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
 	UINT m_rtvDescriptorSize;

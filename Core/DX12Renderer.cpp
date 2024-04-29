@@ -79,27 +79,9 @@ void DX12Renderer::Render()
 	// Store command lists for each render pass.
 	std::vector<ComPtr<ID3D12CommandList>> commandLists;
 
-	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPre;
-	if (mainThreadCommandListPre == nullptr)
-	{
-		m_device->CreateCommandList1(
-			0,
-			D3D12_COMMAND_LIST_TYPE_DIRECT,
-			D3D12_COMMAND_LIST_FLAG_NONE,
-			IID_PPV_ARGS(&mainThreadCommandListPre)
-		) >> CHK_HR;
-	}
+	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPre = m_directCommandQueue.CreateCommandList(m_device);
 
-	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPost;
-	if (mainThreadCommandListPost == nullptr)
-	{
-		m_device->CreateCommandList1(
-			0,
-			D3D12_COMMAND_LIST_TYPE_DIRECT,
-			D3D12_COMMAND_LIST_FLAG_NONE,
-			IID_PPV_ARGS(&mainThreadCommandListPost)
-		) >> CHK_HR;
-	}
+	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPost = m_directCommandQueue.CreateCommandList(m_device);
 
 	// Fetch the current back buffer that we want to render to.
 	auto& backBuffer = m_renderTargets[currBackBufferIndex];
@@ -114,13 +96,15 @@ void DX12Renderer::Render()
 	// Get DSV handle.
 	const CD3DX12_CPU_DESCRIPTOR_HANDLE dsv(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
 
-	// Reset command list and command allocator.
-	m_directCommandAllocator->Reset() >> CHK_HR;
-	mainThreadCommandListPre->Reset(m_directCommandAllocator.Get(), nullptr) >> CHK_HR;
+	// Reset command allocator.
+	m_directCommandQueue.Reset();
 	
 	
 	// Pre render pass setup.
 	{
+		// Reset pre command list.
+		m_directCommandQueue.ResetCommandList(mainThreadCommandListPre);
+
 		// Clear render target.
 		{
 			backBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
@@ -139,6 +123,7 @@ void DX12Renderer::Render()
 			nullptr
 		);
 
+		// Close pre command list.
 		mainThreadCommandListPre->Close();
 
 		// Add command list to list of command lists.
@@ -241,7 +226,7 @@ void DX12Renderer::Render()
 	}
 
 	// Reset post command list with allocator used on command list recently closed.
-	mainThreadCommandListPost->Reset(m_directCommandAllocator.Get(), nullptr) >> CHK_HR;
+	m_directCommandQueue.ResetCommandList(mainThreadCommandListPost);
 
 	// Prepare for present
 	backBuffer.TransitionTo(D3D12_RESOURCE_STATE_PRESENT, mainThreadCommandListPost);
@@ -256,11 +241,11 @@ void DX12Renderer::Render()
 	{
 		ID3D12CommandList* const* commandListsRaw = commandLists[0].GetAddressOf();
 
-		m_directQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
+		m_directCommandQueue.commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
 	}
 
 	// Insert fence that signifies command list completion.
-	m_directQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
+	m_directCommandQueue.commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
 
 	// Present
 	m_swapChain->Present(1, 0) >> CHK_HR;
@@ -372,28 +357,9 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 
 	// Create command queue.
 	{
-		D3D12_COMMAND_QUEUE_DESC commandQueueDesc = {
-			.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
-			.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE,
-			.NodeMask = 0
-		};
-
-		commandQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT; // Direct queue is a 3D queue, which has highest level of feature support.
-		m_device->CreateCommandQueue(&commandQueueDesc, IID_PPV_ARGS(&m_directQueue)) >> CHK_HR;
-		NAME_D3D12_OBJECT_MEMBER(m_directQueue, DX12Renderer);
-
-		commandQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_COPY; // Copy queue is used for copy operations only.
-		m_device->CreateCommandQueue(&commandQueueDesc, IID_PPV_ARGS(&m_copyQueue)) >> CHK_HR;
-		NAME_D3D12_OBJECT_MEMBER(m_copyQueue, DX12Renderer);
-	}
-
-	// Create command allocator.
-	{
-		m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_directCommandAllocator)) >> CHK_HR;
-		NAME_D3D12_OBJECT_MEMBER(m_directCommandAllocator, DX12Renderer);
-
-		m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&m_copyCommandAllocator)) >> CHK_HR;
-		NAME_D3D12_OBJECT_MEMBER(m_copyCommandAllocator, DX12Renderer);
+		m_directCommandQueue = CommandQueueHandler(m_device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
+		m_copyCommandQueue = CommandQueueHandler(m_device.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
+		
 	}
 
 	// Create swap chain.
@@ -417,7 +383,7 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 
 		ComPtr<IDXGISwapChain1> swapChainTemp;
 		factory->CreateSwapChainForHwnd(
-			m_directQueue.Get(), // Implicit synchronization with the command queue.
+			m_directCommandQueue.Get(), // Implicit synchronization with the command queue.
 			m_windowHandle,
 			&swapChainDesc,
 			nullptr,
@@ -725,29 +691,13 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 	// Temp command list for setting up render objects.
 	// Using command list '1' closes the command list immediately and 
 	// doesn't require a command allocator as input, which usually is replaced either way.
-	ComPtr<ID3D12GraphicsCommandList1> copyCommandList;
-	m_device->CreateCommandList1(
-		0,
-		D3D12_COMMAND_LIST_TYPE_COPY, // This command list is only used for copying data to the GPU.
-		D3D12_COMMAND_LIST_FLAG_NONE,
-		IID_PPV_ARGS(&copyCommandList)
-	) >> CHK_HR;
+	ComPtr<ID3D12GraphicsCommandList1> copyCommandList = m_copyCommandQueue.CreateCommandList(m_device);
+	m_copyCommandQueue.Reset();
+	m_copyCommandQueue.ResetCommandList(copyCommandList);
 
-	ComPtr<ID3D12GraphicsCommandList1> directCommandList;
-	m_device->CreateCommandList1(
-		0,
-		D3D12_COMMAND_LIST_TYPE_DIRECT, // This command list is used for transitioning resources.
-		D3D12_COMMAND_LIST_FLAG_NONE,
-		IID_PPV_ARGS(&directCommandList)
-	) >> CHK_HR;
-
-	// Reset copy command list and allocator.
-	m_copyCommandAllocator->Reset() >> CHK_HR;
-	copyCommandList->Reset(m_copyCommandAllocator.Get(), nullptr) >> CHK_HR;
-
-	// Reset direct command list and allocator.
-	m_directCommandAllocator->Reset() >> CHK_HR;
-	directCommandList->Reset(m_directCommandAllocator.Get(), nullptr) >> CHK_HR;
+	ComPtr<ID3D12GraphicsCommandList1> directCommandList = m_directCommandQueue.CreateCommandList(m_device);
+	m_directCommandQueue.Reset();
+	m_directCommandQueue.ResetCommandList(directCommandList);
 
 	UINT vertexCount = 0;
 	GPUResource vertexUploadBuffer;
@@ -812,9 +762,9 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 	// Execute copy commands.
 	{
 		std::array<ID3D12CommandList* const, 1> commandLists = { copyCommandList.Get() };
-		m_copyQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
+		m_copyCommandQueue.commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
 
-		m_copyQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
+		m_copyCommandQueue.commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
 
 		// Wait for copy queue to finish.
 		m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
@@ -823,9 +773,9 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 	// Execute direct commands.
 	{
 		std::array<ID3D12CommandList* const, 1> directCommandLists = { directCommandList.Get() };
-		m_directQueue->ExecuteCommandLists((UINT)directCommandLists.size(), directCommandLists.data());
+		m_directCommandQueue.commandQueue->ExecuteCommandLists((UINT)directCommandLists.size(), directCommandLists.data());
 
-		m_directQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
+		m_directCommandQueue.commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
 
 		// Wait for direct queue to finish.
 		m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
@@ -845,7 +795,7 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 	return renderObject;
 }
 
-CommandQueueHandler::CommandQueueHandler(ID3D12Device* device, D3D12_COMMAND_LIST_TYPE type)
+CommandQueueHandler::CommandQueueHandler(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE type)
 	: m_type(type)
 {
 	D3D12_COMMAND_QUEUE_DESC queueDesc = {
@@ -860,4 +810,34 @@ CommandQueueHandler::CommandQueueHandler(ID3D12Device* device, D3D12_COMMAND_LIS
 
 	device->CreateCommandAllocator(m_type, IID_PPV_ARGS(&commandAllocator)) >> CHK_HR;
 	NAME_D3D12_OBJECT_MEMBER(commandAllocator, CommandQueueHandler);
+}
+
+ComPtr<ID3D12GraphicsCommandList1> CommandQueueHandler::CreateCommandList(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_FLAGS flags /*= D3D12_COMMAND_LIST_FLAG_NONE*/)
+{
+	ComPtr<ID3D12GraphicsCommandList1> commandList;
+	device->CreateCommandList1(
+		0, 
+		m_type, 
+		flags, 
+		IID_PPV_ARGS(&commandList)
+	) >> CHK_HR;
+
+	NAME_D3D12_OBJECT_FUNC(commandList, CommandQueueHandler::CreateCommandList);
+
+	return commandList;
+}
+
+ID3D12CommandQueue* CommandQueueHandler::Get() const
+{
+	return commandQueue.Get();
+}
+
+void CommandQueueHandler::Reset()
+{
+	commandAllocator->Reset() >> CHK_HR;
+}
+
+void CommandQueueHandler::ResetCommandList(ComPtr<ID3D12GraphicsCommandList1> commandList)
+{
+	commandList->Reset(commandAllocator.Get(), nullptr) >> CHK_HR;
 }
