@@ -47,6 +47,12 @@ private:
 	DX12Renderer& operator=(const DX12Renderer& rhs) = delete;
 
 	void InitPipeline();
+	void CreateDeviceAndSwapChain();
+	void CreateRTVHeap();
+	void CreateRTVs();
+	void CreeateDepthBuffer();
+	void CreateDSVHeap();
+	void CreateDSV();
 
 
 	void InitAssets();

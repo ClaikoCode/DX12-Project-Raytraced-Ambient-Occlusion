@@ -301,6 +301,16 @@ DX12Renderer::DX12Renderer(UINT width, UINT height, HWND windowHandle) :
 
 void DX12Renderer::InitPipeline()
 {
+	CreateDeviceAndSwapChain();
+	CreateRTVHeap();
+	CreateRTVs();
+	CreateDepthBuffer();
+	CreateDSVHeap();
+	CreateDSV();
+}
+
+void DX12Renderer::CreateDeviceAndSwapChain()
+{
 	ComPtr<IDXGIFactory4> factory;
 	{
 		UINT dxgiFactoryFlags = 0;
@@ -412,85 +422,85 @@ void DX12Renderer::InitPipeline()
 
 		swapChainTemp.As(&m_swapChain) >> CHK_HR; // Upgrade from Version 1 to Version 4.
 	}
+}
 
-	// Create RTV descriptor heap.
-	{
-		const D3D12_DESCRIPTOR_HEAP_DESC rtvDescriptorHeapDesc = {
+void DX12Renderer::CreateRTVHeap()
+{
+	const D3D12_DESCRIPTOR_HEAP_DESC rtvDescriptorHeapDesc = {
 			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
 			.NumDescriptors = BufferCount,
 			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
 			.NodeMask = 0
-		};
+	};
 
-		m_device->CreateDescriptorHeap(&rtvDescriptorHeapDesc, IID_PPV_ARGS(&m_rtvHeap)) >> CHK_HR;
-		m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+	m_device->CreateDescriptorHeap(&rtvDescriptorHeapDesc, IID_PPV_ARGS(&m_rtvHeap)) >> CHK_HR;
+	m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
-		NAME_D3D12_OBJECT(m_rtvHeap);
-	}
+	NAME_D3D12_OBJECT(m_rtvHeap);
+}
 
-	// Create render target views.
+void DX12Renderer::CreateRTVs()
+{
+	CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
+
+	for (UINT i = 0; i < BufferCount; i++)
 	{
-		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
+		m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_renderTargets[i])) >> CHK_HR;
+		m_device->CreateRenderTargetView(m_renderTargets[i].Get(), nullptr, rtvHandle);
+		rtvHandle.Offset(1, m_rtvDescriptorSize);
 
-		for (UINT i = 0; i < BufferCount; i++)
-		{
-			m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_renderTargets[i])) >> CHK_HR;
-			m_device->CreateRenderTargetView(m_renderTargets[i].Get(), nullptr, rtvHandle);
-			rtvHandle.Offset(1, m_rtvDescriptorSize);
-
-			NAME_D3D12_OBJECT_INDEXED(m_renderTargets, i);
-		}
+		NAME_D3D12_OBJECT_INDEXED(m_renderTargets, i);
 	}
+}
 
-	// Create depth buffer.
-	{
-		const CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+void DX12Renderer::CreateDepthBuffer()
+{
+	const CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
 
-		const CD3DX12_RESOURCE_DESC depthBufferDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-			DXGI_FORMAT_D32_FLOAT,
-			m_width,
-			m_height,
-			1, 0, 1, 0,
-			D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
-		);
+	const CD3DX12_RESOURCE_DESC depthBufferDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+		DXGI_FORMAT_D32_FLOAT,
+		m_width,
+		m_height,
+		1, 0, 1, 0,
+		D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
+	);
 
-		const D3D12_CLEAR_VALUE depthOptimizedClearValue = {
-			.Format = DXGI_FORMAT_D32_FLOAT,
-			.DepthStencil = { 1.0f, 0 }
-		};
+	const D3D12_CLEAR_VALUE depthOptimizedClearValue = {
+		.Format = DXGI_FORMAT_D32_FLOAT,
+		.DepthStencil = { 1.0f, 0 }
+	};
 
-		m_device->CreateCommittedResource(
-			&heapProps,
-			D3D12_HEAP_FLAG_NONE,
-			&depthBufferDesc,
-			D3D12_RESOURCE_STATE_DEPTH_WRITE,
-			&depthOptimizedClearValue,
-			IID_PPV_ARGS(&m_depthBuffer)
-		) >> CHK_HR;
-	
-		NAME_D3D12_OBJECT(m_depthBuffer);
-	}
+	m_device->CreateCommittedResource(
+		&heapProps,
+		D3D12_HEAP_FLAG_NONE,
+		&depthBufferDesc,
+		D3D12_RESOURCE_STATE_DEPTH_WRITE,
+		&depthOptimizedClearValue,
+		IID_PPV_ARGS(&m_depthBuffer)
+	) >> CHK_HR;
 
-	// Create DSV descriptor heap.
-	{
-		const D3D12_DESCRIPTOR_HEAP_DESC dsvDescriptorHeapDesc = {
+	NAME_D3D12_OBJECT(m_depthBuffer);
+}
+
+void DX12Renderer::CreateDSVHeap()
+{
+	const D3D12_DESCRIPTOR_HEAP_DESC dsvDescriptorHeapDesc = {
 			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
 			.NumDescriptors = 1,
 			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
 			.NodeMask = 0
-		};
+	};
 
-		m_device->CreateDescriptorHeap(&dsvDescriptorHeapDesc, IID_PPV_ARGS(&m_dsvHeap)) >> CHK_HR;
+	m_device->CreateDescriptorHeap(&dsvDescriptorHeapDesc, IID_PPV_ARGS(&m_dsvHeap)) >> CHK_HR;
 
-		NAME_D3D12_OBJECT(m_dsvHeap);
-	}
+	NAME_D3D12_OBJECT(m_dsvHeap);
+}
 
-	// Create DSV.
-	{
-		CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
+void DX12Renderer::CreateDSV()
+{
+	CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
 
-		m_device->CreateDepthStencilView(m_depthBuffer.Get(), nullptr, dsvHandle);
-	}
+	m_device->CreateDepthStencilView(m_depthBuffer.Get(), nullptr, dsvHandle);
 }
 
 void DX12Renderer::InitAssets()
