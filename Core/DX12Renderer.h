@@ -44,7 +44,14 @@ public:
 	// Assumes that the command list used is a command list previously created by this class.
 	void ResetCommandList(ComPtr<ID3D12GraphicsCommandList1> commandList);
 
+	void Signal();
+	// If nullptr is passed, the function will wait indefinitely.
+	void Wait(HANDLE event);
+	void SignalAndWait(HANDLE event);
+
 private:
+	ComPtr<ID3D12Fence> m_fence;
+	UINT64 m_fenceValue;
 	D3D12_COMMAND_LIST_TYPE m_type;
 };
 
@@ -79,7 +86,6 @@ private:
 	void InitAssets();
 	void CreateRootSignatures();
 	void CreatePSOs();
-	void CreateFence();
 	void CreateRenderObjects();
 	void CreateCamera();
 
@@ -107,14 +113,11 @@ private:
 
 	ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
 	ComPtr<ID3D12Resource> m_depthBuffer;
-	
 
 	std::unordered_map<RenderPassType, std::unique_ptr<DX12RenderPass>> m_renderPasses;
 	ComPtr<ID3D12RootSignature> m_rootSignature;
 
 	// Synchronization objects.
-	ComPtr<ID3D12Fence> m_fence;
-	UINT m_fenceValue;
 	DX12SyncHandler m_syncHandler;
 
 	std::unordered_map<ShaderPipelineStateType, std::vector<RenderObject>> m_renderObjectsByPipelineState;

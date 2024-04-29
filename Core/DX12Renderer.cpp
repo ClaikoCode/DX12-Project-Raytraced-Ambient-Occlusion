@@ -245,21 +245,13 @@ void DX12Renderer::Render()
 	}
 
 	// Insert fence that signifies command list completion.
-	m_directCommandQueue.commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
+	m_directCommandQueue.Signal();
 
 	// Present
 	m_swapChain->Present(1, 0) >> CHK_HR;
 
-	// Wait for signal
-	//CHECK_HR(fence->SetEventOnCompletion(fenceValue, fenceEvent));
-	//if (::WaitForSingleObject(fenceEvent, INFINITE) == WAIT_FAILED)
-	//{
-	//	CHECK_HR(GetLastError());
-	//}
-
-	// Alternative signal wait without requiring event handle.
-	// According to the docs for SetEventOnCompletion(), this will not return until the fence value has been reached.
-	m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
+	// Wait for the command queue to finish.
+	m_directCommandQueue.Wait(nullptr);
 }
 
 DX12Renderer::~DX12Renderer()
@@ -274,8 +266,7 @@ DX12Renderer::DX12Renderer(UINT width, UINT height, HWND windowHandle) :
 	m_windowHandle(windowHandle),
 	m_scissorRect(0, 0, static_cast<LONG>(width), static_cast<LONG>(height)),
 	m_viewport(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height)),
-	m_rtvDescriptorSize(0),
-	m_fenceValue(0)
+	m_rtvDescriptorSize(0)
 {
 	s_instance = this;
 
@@ -478,7 +469,6 @@ void DX12Renderer::InitAssets()
 {
 	CreateRootSignatures();
 	CreatePSOs();
-	CreateFence();
 	CreateRenderObjects();
 	CreateCamera();
 }
@@ -590,13 +580,6 @@ void DX12Renderer::CreatePSOs()
 	m_syncHandler.AddUniquePassSync(IndexedPass);
 }
 
-void DX12Renderer::CreateFence()
-{
-	// Create fence.
-	m_device->CreateFence(m_fenceValue, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)) >> CHK_HR;
-
-	NAME_D3D12_OBJECT_MEMBER(m_fence, DX12Renderer);
-}
 
 void DX12Renderer::CreateRenderObjects()
 {
@@ -764,10 +747,7 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 		std::array<ID3D12CommandList* const, 1> commandLists = { copyCommandList.Get() };
 		m_copyCommandQueue.commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
 
-		m_copyCommandQueue.commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
-
-		// Wait for copy queue to finish.
-		m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
+		m_copyCommandQueue.SignalAndWait(nullptr);
 	}
 	
 	// Execute direct commands.
@@ -775,10 +755,7 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 		std::array<ID3D12CommandList* const, 1> directCommandLists = { directCommandList.Get() };
 		m_directCommandQueue.commandQueue->ExecuteCommandLists((UINT)directCommandLists.size(), directCommandLists.data());
 
-		m_directCommandQueue.commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
-
-		// Wait for direct queue to finish.
-		m_fence->SetEventOnCompletion(m_fenceValue, nullptr) >> CHK_HR;
+		m_directCommandQueue.SignalAndWait(nullptr);
 	}
 
 	// Add to render objects.
@@ -796,7 +773,7 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 }
 
 CommandQueueHandler::CommandQueueHandler(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE type)
-	: m_type(type)
+	: m_type(type), m_fenceValue(0)
 {
 	D3D12_COMMAND_QUEUE_DESC queueDesc = {
 		.Type = m_type,
@@ -810,6 +787,11 @@ CommandQueueHandler::CommandQueueHandler(ComPtr<ID3D12Device5> device, D3D12_COM
 
 	device->CreateCommandAllocator(m_type, IID_PPV_ARGS(&commandAllocator)) >> CHK_HR;
 	NAME_D3D12_OBJECT_MEMBER(commandAllocator, CommandQueueHandler);
+
+	// Create fence.
+	device->CreateFence(m_fenceValue, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)) >> CHK_HR;
+
+	NAME_D3D12_OBJECT_MEMBER(m_fence, DX12Renderer);
 }
 
 ComPtr<ID3D12GraphicsCommandList1> CommandQueueHandler::CreateCommandList(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_FLAGS flags /*= D3D12_COMMAND_LIST_FLAG_NONE*/)
@@ -840,4 +822,20 @@ void CommandQueueHandler::Reset()
 void CommandQueueHandler::ResetCommandList(ComPtr<ID3D12GraphicsCommandList1> commandList)
 {
 	commandList->Reset(commandAllocator.Get(), nullptr) >> CHK_HR;
+}
+
+void CommandQueueHandler::Signal()
+{
+	commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
+}
+
+void CommandQueueHandler::Wait(HANDLE event)
+{
+	m_fence->SetEventOnCompletion(m_fenceValue, event) >> CHK_HR;
+}
+
+void CommandQueueHandler::SignalAndWait(HANDLE event)
+{
+	Signal();
+	Wait(event);
 }
