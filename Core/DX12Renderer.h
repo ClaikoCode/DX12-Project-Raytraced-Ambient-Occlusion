@@ -47,7 +47,13 @@ private:
 	DX12Renderer& operator=(const DX12Renderer& rhs) = delete;
 
 	void InitPipeline();
+
+
 	void InitAssets();
+	void CreateRootSignatures();
+	void CreatePSOs();
+	void CreateRenderObjects();
+	void CreateCamera();
 
 	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology);
 

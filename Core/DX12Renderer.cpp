@@ -495,116 +495,120 @@ void DX12Renderer::InitPipeline()
 
 void DX12Renderer::InitAssets()
 {
-	// Create root signature.
-	{
-		std::array<CD3DX12_ROOT_PARAMETER, 1> rootParameters = {};
-		// Add a matrix to the root signature where each element is stored as a constant.
-		rootParameters[0].InitAsConstants(sizeof(dx::XMMATRIX) / 4, 0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+	CreateRootSignatures();
+	CreatePSOs();
+	CreateRenderObjects();
+	CreateCamera();
+}
 
-		CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
-		rootSignatureDesc.Init(
-			(UINT)rootParameters.size(),
-			rootParameters.data(),
-			0,
-			nullptr,
-			D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+void DX12Renderer::CreateRootSignatures()
+{
+	std::array<CD3DX12_ROOT_PARAMETER, 1> rootParameters = {};
+	// Add a matrix to the root signature where each element is stored as a constant.
+	rootParameters[0].InitAsConstants(sizeof(dx::XMMATRIX) / 4, 0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+
+	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+	rootSignatureDesc.Init(
+		(UINT)rootParameters.size(),
+		rootParameters.data(),
+		0,
+		nullptr,
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+	);
+
+
+	ComPtr<ID3DBlob> signature;
+	ComPtr<ID3DBlob> error;
+	{
+		const HRESULT hr = D3D12SerializeRootSignature(
+			&rootSignatureDesc,
+			D3D_ROOT_SIGNATURE_VERSION_1,
+			&signature,
+			&error
 		);
 
-
-		ComPtr<ID3DBlob> signature;
-		ComPtr<ID3DBlob> error;
+		if (FAILED(hr))
 		{
-			const HRESULT hr = D3D12SerializeRootSignature(
-				&rootSignatureDesc,
-				D3D_ROOT_SIGNATURE_VERSION_1,
-				&signature,
-				&error
-			);
-
-			if (FAILED(hr))
+			// If there is an error blob, first print out the problem reported from the blob.
+			if (error)
 			{
-				// If there is an error blob, first print out the problem reported from the blob.
-				if (error)
-				{
-					const char* errorBuffer = static_cast<const char*>(error->GetBufferPointer());
-					std::string errorString = std::string("Serialize ERROR: ") + std::string(errorBuffer);
-					OutputDebugStringA(errorString.c_str());
-				}
-
-				// Properly handle the HR value.
-				hr >> CHK_HR;
+				const char* errorBuffer = static_cast<const char*>(error->GetBufferPointer());
+				std::string errorString = std::string("Serialize ERROR: ") + std::string(errorBuffer);
+				OutputDebugStringA(errorString.c_str());
 			}
 
-			// Create the root sig.
-			m_device->CreateRootSignature(
-				0,
-				signature->GetBufferPointer(),
-				signature->GetBufferSize(),
-				IID_PPV_ARGS(&m_rootSignature)
-			) >> CHK_HR;
-
-			NAME_D3D12_OBJECT(m_rootSignature);
+			// Properly handle the HR value.
+			hr >> CHK_HR;
 		}
+
+		// Create the root sig.
+		m_device->CreateRootSignature(
+			0,
+			signature->GetBufferPointer(),
+			signature->GetBufferSize(),
+			IID_PPV_ARGS(&m_rootSignature)
+		) >> CHK_HR;
+
+		NAME_D3D12_OBJECT(m_rootSignature);
 	}
+}
 
-
-	// Create pipeline state object.
+void DX12Renderer::CreatePSOs()
+{
+	struct PipelineStateStream
 	{
-		struct PipelineStateStream
-		{
-			CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE RootSignature;
-			CD3DX12_PIPELINE_STATE_STREAM_INPUT_LAYOUT InputLayout;
-			CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimtiveTopology;
-			CD3DX12_PIPELINE_STATE_STREAM_VS VS;
-			CD3DX12_PIPELINE_STATE_STREAM_PS PS;
-			CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
-			CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
-		} pipelineStateStream;
+		CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE RootSignature;
+		CD3DX12_PIPELINE_STATE_STREAM_INPUT_LAYOUT InputLayout;
+		CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimtiveTopology;
+		CD3DX12_PIPELINE_STATE_STREAM_VS VS;
+		CD3DX12_PIPELINE_STATE_STREAM_PS PS;
+		CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
+		CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
+	} pipelineStateStream;
 
-		const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
-			{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-			{ "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
-		};
+	const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+	};
 
-		ComPtr<ID3DBlob> vsBlob;
-		D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
+	ComPtr<ID3DBlob> vsBlob;
+	D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
 
-		ComPtr<ID3DBlob> psBlob;
-		D3DReadFileToBlob(L"../PixelShader.cso", &psBlob) >> CHK_HR;
+	ComPtr<ID3DBlob> psBlob;
+	D3DReadFileToBlob(L"../PixelShader.cso", &psBlob) >> CHK_HR;
 
 
-		pipelineStateStream.RootSignature = m_rootSignature.Get();
-		pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
-		pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
-		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
-		pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-		pipelineStateStream.RTVFormats = {
-			.RTFormats = { DXGI_FORMAT_R8G8B8A8_UNORM },
-			.NumRenderTargets = 1
-		};
+	pipelineStateStream.RootSignature = m_rootSignature.Get();
+	pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
+	pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
+	pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
+	pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+	pipelineStateStream.RTVFormats = {
+		.RTFormats = { DXGI_FORMAT_R8G8B8A8_UNORM },
+		.NumRenderTargets = 1
+	};
 
-		const D3D12_PIPELINE_STATE_STREAM_DESC pipelineStateStreamDesc = {
-			.SizeInBytes = sizeof(PipelineStateStream),
-			.pPipelineStateSubobjectStream = &pipelineStateStream
-		};
-
-
-		ComPtr<ID3D12PipelineState> pipelineState;
-		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&pipelineState)) >> CHK_HR;
-
-		NAME_D3D12_OBJECT(pipelineState);
-
-		m_renderPasses[NonIndexedPass] = std::make_unique<NonIndexedRenderPass>(m_device.Get(), pipelineState);
-		m_syncHandler.AddUniquePassSync(NonIndexedPass);
-
-		m_renderPasses[IndexedPass] = std::make_unique<IndexedRenderPass>(m_device.Get(), pipelineState);
-		m_syncHandler.AddUniquePassSync(IndexedPass);
-	}
+	const D3D12_PIPELINE_STATE_STREAM_DESC pipelineStateStreamDesc = {
+		.SizeInBytes = sizeof(PipelineStateStream),
+		.pPipelineStateSubobjectStream = &pipelineStateStream
+	};
 
 
+	ComPtr<ID3D12PipelineState> pipelineState;
+	m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&pipelineState)) >> CHK_HR;
 
+	NAME_D3D12_OBJECT(pipelineState);
 
+	m_renderPasses[NonIndexedPass] = std::make_unique<NonIndexedRenderPass>(m_device.Get(), pipelineState);
+	m_syncHandler.AddUniquePassSync(NonIndexedPass);
+
+	m_renderPasses[IndexedPass] = std::make_unique<IndexedRenderPass>(m_device.Get(), pipelineState);
+	m_syncHandler.AddUniquePassSync(IndexedPass);
+}
+
+void DX12Renderer::CreateRenderObjects()
+{
 	// Temp command list for setting up the assets.
 	// Using command list '1' closes the command list immediately and 
 	// doesn't require a command allocator as input, which usually is replaced either way.
@@ -653,11 +657,11 @@ void DX12Renderer::InitAssets()
 				4, 0, 3, 4, 3, 7  // bottom face
 		};
 
-		RenderObject cube =	CreateRenderObject(&cubeData, &cubeIndices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		RenderObject cube = CreateRenderObject(&cubeData, &cubeIndices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		m_renderObjectsByPipelineState[IndexedPass].push_back(cube);
 	}
 
-	
+
 	{
 		std::string modelPath = std::string(AssetsPath) + "teapot.obj";
 		tinyobj::ObjReaderConfig readerConfig = {};
@@ -690,20 +694,19 @@ void DX12Renderer::InitAssets()
 		RenderObject pumpkin = CreateRenderObject(&vertices, &indices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		m_renderObjectsByPipelineState[IndexedPass].push_back(pumpkin);
 	}
+}
 
-	// Initialize camera.
-	{
-		const float aspectRatio = static_cast<float>(m_width) / static_cast<float>(m_height);
-		const float nearZ = 0.01f;
-		const float farZ = 1000.0f;
-		const float fov = XMConvertToRadians(90.0f);
+void DX12Renderer::CreateCamera()
+{
+	const float aspectRatio = static_cast<float>(m_width) / static_cast<float>(m_height);
+	const float nearZ = 0.01f;
+	const float farZ = 1000.0f;
+	const float fov = XMConvertToRadians(90.0f);
 
-		m_cameras.push_back(Camera(fov, aspectRatio, nearZ, farZ));
-		m_activeCamera = &m_cameras[0];
+	m_cameras.push_back(Camera(fov, aspectRatio, nearZ, farZ));
+	m_activeCamera = &m_cameras[0];
 
-		m_activeCamera->SetPosAndDir({ 0.0f, 0.0f, -5.0f }, { 0.0f, 0.0f, 1.0f });
-	}
-
+	m_activeCamera->SetPosAndDir({ 0.0f, 0.0f, -5.0f }, { 0.0f, 0.0f, 1.0f });
 }
 
 RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology)
