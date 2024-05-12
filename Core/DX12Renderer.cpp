@@ -70,6 +70,11 @@ DX12Renderer& DX12Renderer::Get()
 	return *s_instance;
 }
 
+void DX12Renderer::Update()
+{
+	UpdateInstanceConstantBuffers();
+}
+
 void DX12Renderer::Render()
 {
 	static float t = 0;
@@ -156,22 +161,22 @@ void DX12Renderer::Render()
 		// Wait for start sync.
 		m_syncHandler.WaitStart(context);
 
-		for (RenderPassType renderPass : renderPassOrder)
+		for (RenderPassType renderPassType : renderPassOrder)
 		{
-			DX12RenderPass& pass = *m_renderPasses[renderPass];
+			DX12RenderPass& pass = *m_renderPasses[renderPassType];
 
 			// Temp code, remove later.
-			std::vector<RenderObjectID>& renderObjectIDs = m_renderInstancesByPipelineState[renderPass];
-			std::vector<RenderObject> renderObjects;
-			for (const auto& renderObjectID : renderObjectIDs)
-			{
-				renderObjects.push_back(m_renderObjects[renderObjectID]);
-			}
+			//std::vector<RenderObjectID>& renderObjectIDs = m_renderInstancesByPipelineState[renderPassType];
+			//std::vector<RenderObject> renderObjects;
+			//for (const auto& renderObjectID : renderObjectIDs)
+			//{
+			//	renderObjects.push_back(m_renderObjectsByID[renderObjectID]);
+			//}
 
-			if (renderPass == NonIndexedPass)
-			{
-				
+			const std::vector<RenderObjectID>& objectIDs = m_renderObjectIDsByRenderPassType[renderPassType];
 
+			if (renderPassType == NonIndexedPass)
+			{
 				NonIndexedRenderPass& nonIndexedRenderPass = static_cast<NonIndexedRenderPass&>(pass);
 				NonIndexedRenderPass::NonIndexedRenderPassArgs args;
 
@@ -183,41 +188,60 @@ void DX12Renderer::Render()
 				args.viewport = m_viewport;
 				args.scissorRect = m_scissorRect;
 
+				args.cbvSrvUavHeap = m_cbvSrvUavHeap;
+				args.perInstanceCBVDescSize = m_cbvSrvUavDescriptorSize;
+
 				// Add view projection matrix.
 				args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
 
-				nonIndexedRenderPass.Render(renderObjects, context, m_device, args);
+				// Build render packages to send to render.
+				std::vector<RenderPackage> renderPackages;
+				for (RenderObjectID renderID : objectIDs)
+				{
+					RenderObject& renderObject = m_renderObjectsByID[renderID];
+					std::vector<RenderInstance>& instances = m_renderInstancesByID[renderID];
 
+					RenderPackage renderPackage = {
+						.renderObject = &renderObject,
+						.renderInstances = &instances
+					};
+
+					renderPackages.push_back(std::move(renderPackage));
+				}
+
+				// Render all render packages.
+				nonIndexedRenderPass.Render(renderPackages, context, m_device, args);
+				
 				// Signal that pass is done.
-				m_syncHandler.SetPass(context, renderPass);
+				m_syncHandler.SetPass(context, renderPassType);
 			}
-			else if (renderPass == IndexedPass)
+			else if (renderPassType == IndexedPass)
 			{
-				IndexedRenderPass& indexedRenderPass = static_cast<IndexedRenderPass&>(pass);
-				IndexedRenderPass::IndexedRenderPassArgs args;
-
-				// Add state args.
-				args.time = t;
-				args.renderTargetView = rtv;
-				args.depthStencilView = dsv;
-				args.rootSignature = m_rootSignature;
-				args.viewport = m_viewport;
-				args.scissorRect = m_scissorRect;
-
-				// Add view projection matrix.
-				args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
-
-				indexedRenderPass.Render(renderObjects, context, m_device, args);
-
-				// Signal that pass is done.
-				m_syncHandler.SetPass(context, renderPass);
+				//IndexedRenderPass& indexedRenderPass = static_cast<IndexedRenderPass&>(pass);
+				//IndexedRenderPass::IndexedRenderPassArgs args;
+				//
+				//// Add state args.
+				//args.time = t;
+				//args.renderTargetView = rtv;
+				//args.depthStencilView = dsv;
+				//args.rootSignature = m_rootSignature;
+				//args.viewport = m_viewport;
+				//args.scissorRect = m_scissorRect;
+				//
+				//// Add view projection matrix.
+				//args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
+				//
+				//indexedRenderPass.Render(TODO, renderObjects, context, m_device, args);
+				//
+				//// Signal that pass is done.
+				//m_syncHandler.SetPass(context, renderPassType);
 			}
 			else
 			{
 				throw std::runtime_error("Unknown render pass type.");
 			}
 
-			m_renderPasses[renderPass]->Close(context);
+			m_renderPasses[renderPassType]->Close(context);
 		}
 
 		// Signal end sync.
@@ -295,6 +319,11 @@ void DX12Renderer::InitPipeline()
 	CreateDepthBuffer();
 	CreateDSVHeap();
 	CreateDSV();
+
+	// TODO: Check if this makes sense to be in "init pipeline".
+	CreateConstantBuffers();
+	CreateCBVSRVUAVHeap();
+	CreateCBV();
 }
 
 void DX12Renderer::CreateDeviceAndSwapChain()
@@ -466,6 +495,7 @@ void DX12Renderer::CreateDSVHeap()
 
 	m_device->CreateDescriptorHeap(&dsvDescriptorHeapDesc, IID_PPV_ARGS(&m_dsvHeap)) >> CHK_HR;
 
+
 	NAME_D3D12_OBJECT_MEMBER(m_dsvHeap, DX12Renderer);
 }
 
@@ -476,11 +506,82 @@ void DX12Renderer::CreateDSV()
 	m_device->CreateDepthStencilView(m_depthBuffer.Get(), nullptr, dsvHandle);
 }
 
+void DX12Renderer::CreateConstantBuffers()
+{
+	// Create instances CBs.
+	{
+		constexpr UINT instanceElementSize = DX12Abstractions::CalculateConstantBufferByteSize(sizeof(InstanceConstants));
+		const UINT instanceBufferSize = instanceElementSize * MaxRenderInstances;
+
+		const CD3DX12_RESOURCE_DESC constantBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(instanceBufferSize);
+
+		m_perInstanceCB = CreateUploadResource(m_device, constantBufferDesc);
+		NAME_D3D12_OBJECT_MEMBER(m_perInstanceCB, DX12Renderer);
+
+		// Map and initialize the constant buffer.
+		{
+			InstanceConstants* pConstantBufferData;
+			m_perInstanceCB.resource->Map(0, nullptr, reinterpret_cast<void**>(&pConstantBufferData)) >> CHK_HR;
+
+			dx::XMMATRIX modelMatrix = dx::XMMatrixIdentity();
+
+			for (UINT i = 0; i < MaxRenderInstances; i++)
+			{
+				// No need to transpose the matrix since it's identity.
+				dx::XMStoreFloat4x4(&pConstantBufferData[i].modelMatrix, modelMatrix);
+			}
+
+			m_perInstanceCB.resource->Unmap(0, nullptr);
+		}
+	}
+
+}
+
+void DX12Renderer::CreateCBVSRVUAVHeap()
+{
+	const D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDescCBVSRVUAV =
+	{
+		.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+		.NumDescriptors = NumCBVSRVUAVDescriptors,
+		.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+		.NodeMask = 0
+	};
+
+	m_device->CreateDescriptorHeap(&descriptorHeapDescCBVSRVUAV, IID_PPV_ARGS(&m_cbvSrvUavHeap)) >> CHK_HR;
+	m_cbvSrvUavDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+	NAME_D3D12_OBJECT_MEMBER(m_cbvSrvUavHeap, DX12Renderer);
+}
+
+void DX12Renderer::CreateCBV()
+{
+	constexpr UINT instanceDataSize = DX12Abstractions::CalculateConstantBufferByteSize(sizeof(InstanceConstants));
+
+	// Create all CBV descriptors for render instances.
+	for (UINT i = CBVSRVUAVOffsets::RenderInstanceOffset; i < MaxRenderInstances; i++)
+	{
+		D3D12_GPU_VIRTUAL_ADDRESS instanceCBAddress = m_perInstanceCB.resource->GetGPUVirtualAddress();
+		// Set the offset for the data location inside the upload buffer.
+		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {
+			.BufferLocation = instanceCBAddress + i * instanceDataSize,
+			.SizeInBytes = instanceDataSize
+		};
+
+		// Set the offset for the handle location inside the descriptor heap.
+		// This was noticed to be needed inside the loop to function without getting a memory exception.
+		// My theory is that there is no guarantee that the start of the memory wont change as the heap fills up dynamically, because of reallocation.
+		// The start of the actual memory therefore needs to be fetched each loop to get the proper memory location.
+		CD3DX12_CPU_DESCRIPTOR_HANDLE instanceCBVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
+		instanceCBVHandle.Offset(i, m_cbvSrvUavDescriptorSize);
+
+		m_device->CreateConstantBufferView(&cbvDesc, instanceCBVHandle);
+	}
+}
+
 void DX12Renderer::InitAssets()
 {
 	CreateRootSignatures();
 	CreatePSOs();
-	CreateConstantBuffers();
 	CreateRenderObjects();
 	CreateCamera();
 	CreateRenderInstances();
@@ -488,10 +589,19 @@ void DX12Renderer::InitAssets()
 
 void DX12Renderer::CreateRootSignatures()
 {
-	std::array<CD3DX12_ROOT_PARAMETER, 1> rootParameters = {};
-	// Add a matrix to the root signature where each element is stored as a constant.
-	rootParameters[0].InitAsConstants(sizeof(dx::XMMATRIX) / 4, 0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+	CD3DX12_DESCRIPTOR_RANGE cbvTable;
+	cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, RootSigRegisters::CBRegisters::CBDescriptorTable);
 
+	std::array<CD3DX12_ROOT_PARAMETER, 2> rootParameters = {};
+	// Add a matrix to the root signature where each element is stored as a constant.
+	rootParameters[0].InitAsConstants(
+		sizeof(dx::XMMATRIX) / 4, 
+		RootSigRegisters::CBRegisters::MatrixConstants,
+		0, 
+		D3D12_SHADER_VISIBILITY_VERTEX
+	);
+	// Add descriptor table for instance specific constants.
+	rootParameters[1].InitAsDescriptorTable(1, &cbvTable, D3D12_SHADER_VISIBILITY_ALL);
 
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
 	rootSignatureDesc.Init(
@@ -501,7 +611,6 @@ void DX12Renderer::CreateRootSignatures()
 		nullptr,
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
 	);
-
 
 	ComPtr<ID3DBlob> signature;
 	ComPtr<ID3DBlob> error;
@@ -595,34 +704,6 @@ void DX12Renderer::CreatePSOs()
 }
 
 
-void DX12Renderer::CreateConstantBuffers()
-{
-	constexpr UINT instanceElementSize = DX12Abstractions::CalculateConstantBufferByteSize(sizeof(InstanceData));
-	const UINT instanceBufferSize = instanceElementSize * MaxInstances;
-
-	const CD3DX12_RESOURCE_DESC constantBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(instanceBufferSize);
-
-	m_instanceUploadBuffer = CreateUploadResource(m_device, constantBufferDesc);
-	NAME_D3D12_OBJECT_MEMBER(m_instanceUploadBuffer, DX12Renderer);
-
-	// Map and initialize the constant buffer.
-	{
-		InstanceData* pConstantBufferData;
-		m_instanceUploadBuffer.resource->Map(0, nullptr, reinterpret_cast<void**>(&pConstantBufferData)) >> CHK_HR;
-
-		dx::XMMATRIX modelMatrix = dx::XMMatrixIdentity();
-
-		for (UINT i = 0; i < MaxInstances; i++)
-		{
-			// No need to transpose the matrix since it's identity.
-			dx::XMStoreFloat4x4(&pConstantBufferData[i].modelMatrix, modelMatrix);
-		}
-
-		m_instanceUploadBuffer.resource->Unmap(0, nullptr);
-	}
-
-}
-
 void DX12Renderer::CreateRenderObjects()
 {
 	{
@@ -633,8 +714,8 @@ void DX12Renderer::CreateRenderObjects()
 		} };
 
 
-		m_renderObjects[RenderObjectID::Triangle] = CreateRenderObject(&triangleData, nullptr, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		m_renderInstancesByPipelineState[NonIndexedPass].push_back(RenderObjectID::Triangle);
+		m_renderObjectsByID[RenderObjectID::Triangle] = CreateRenderObject(&triangleData, nullptr, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		m_renderObjectIDsByRenderPassType[NonIndexedPass].push_back(RenderObjectID::Triangle);
 	}
 
 	{
@@ -658,15 +739,15 @@ void DX12Renderer::CreateRenderObjects()
 				4, 0, 3, 4, 3, 7  // bottom face
 		};
 
-		m_renderObjects[RenderObjectID::Cube] = CreateRenderObject(&cubeData, &cubeIndices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		m_renderInstancesByPipelineState[IndexedPass].push_back(RenderObjectID::Cube);
+		m_renderObjectsByID[RenderObjectID::Cube] = CreateRenderObject(&cubeData, &cubeIndices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::Cube);
 	}
 
 	// Add obj model.
 	{
 		std::string modelPath = std::string(AssetsPath) + "Koltuk.obj";
-		m_renderObjects[RenderObjectID::OBJModel1] = CreateRenderObjectFromOBJ(modelPath, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		m_renderInstancesByPipelineState[IndexedPass].push_back(RenderObjectID::OBJModel1);
+		m_renderObjectsByID[RenderObjectID::OBJModel1] = CreateRenderObjectFromOBJ(modelPath, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::OBJModel1);
 	}
 }
 
@@ -685,15 +766,53 @@ void DX12Renderer::CreateCamera()
 
 void DX12Renderer::CreateRenderInstances()
 {
-	static uint32_t sInstanceCount = 0u;
-
 	{
-		RenderInstance triangleInstance = {};
-		triangleInstance.CBIndex = sInstanceCount++;
+		std::vector<RenderInstance>& renderInstances = m_renderInstancesByID[RenderObjectID::Triangle];
 
-		InstanceData instanceData = {};
-		dx::XMStoreFloat4x4(&instanceData.modelMatrix, dx::XMMatrixIdentity());
+		RenderInstance triangleInstance = {};
+
+		triangleInstance.CBIndex = renderInstances.size();
+		dx::XMStoreFloat4x4(&triangleInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(5.0f, 0.0f, 0.0f));
+		renderInstances.push_back(triangleInstance);
+
+		triangleInstance.CBIndex = renderInstances.size();
+		dx::XMStoreFloat4x4(&triangleInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-5.0f, 0.0f, 0.0f));
+		renderInstances.push_back(triangleInstance);
+
+		triangleInstance.CBIndex = renderInstances.size();
+		dx::XMStoreFloat4x4(&triangleInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-7.0f, 0.0f, 0.0f));
+		renderInstances.push_back(triangleInstance);
+
+		triangleInstance.CBIndex = renderInstances.size();
+		dx::XMStoreFloat4x4(&triangleInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(7.0f, 0.0f, 0.0f));
+		renderInstances.push_back(triangleInstance);
+
+		triangleInstance.CBIndex = renderInstances.size();
+		dx::XMStoreFloat4x4(&triangleInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(0.0f, 5.0f, 0.0f));
+		renderInstances.push_back(triangleInstance);
 	}
+}
+
+void DX12Renderer::UpdateInstanceConstantBuffers()
+{
+	// Copy through byte offsets.
+	uint8_t* instanceDataStart = nullptr;
+	m_perInstanceCB.resource->Map(0, nullptr, reinterpret_cast<void**>(&instanceDataStart)) >> CHK_HR;
+	constexpr UINT perInstanceSize = DX12Abstractions::CalculateConstantBufferByteSize(sizeof(InstanceConstants));
+
+	for (auto& it : m_renderInstancesByID)
+	{
+		RenderObjectID renderObjectID = it.first;
+		std::vector<RenderInstance>& renderInstances = it.second;
+
+		for (RenderInstance& renderInstance : renderInstances)
+		{
+			uint8_t* instanceData = instanceDataStart + renderInstance.CBIndex * perInstanceSize;
+			memcpy(instanceData, &renderInstance.instanceData, sizeof(InstanceConstants));
+		}
+	}
+
+	m_perInstanceCB.resource->Unmap(0, nullptr);
 }
 
 RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology)

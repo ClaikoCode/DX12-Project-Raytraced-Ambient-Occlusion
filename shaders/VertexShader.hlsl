@@ -11,18 +11,26 @@ struct VSIn
     float3 color : COLOR;
 };
 
-struct Rotation
+struct ModelTransform
 {
     matrix transform;
 };
 
-ConstantBuffer<Rotation> rot : register(b0);
+struct CameraInfo
+{
+    matrix viewProjMatrix;
+};
+
+ConstantBuffer<CameraInfo> camInfo : register(b0);
+ConstantBuffer<ModelTransform> transf : register(b1);
 
 VSOut main(VSIn input)
 {
     VSOut output = (VSOut) 0;
     
-    output.pos = mul(float4(input.pos, 1.0f), rot.transform);
+    // TODO: Remove the need to do transpose in shader.
+    matrix mvpMatrix = mul(transpose(transf.transform), transpose(camInfo.viewProjMatrix));
+    output.pos = mul(float4(input.pos, 1.0f), mvpMatrix);
     output.color = float4(input.normal, 1.0f);
 
     return output;

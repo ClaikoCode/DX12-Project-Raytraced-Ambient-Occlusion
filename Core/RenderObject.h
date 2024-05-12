@@ -35,5 +35,12 @@ struct RenderObject
 struct RenderInstance
 {
 	UINT CBIndex;
-	InstanceData instanceData;
+	InstanceConstants instanceData;
+};
+
+// Contains information about the render object and also each instance of that render object.
+struct RenderPackage
+{
+	RenderObject* renderObject;
+	std::vector<RenderInstance>* renderInstances;
 };

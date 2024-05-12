@@ -44,6 +44,10 @@ public:
 		ComPtr<ID3D12RootSignature> rootSignature;
 		CD3DX12_VIEWPORT viewport;
 		CD3DX12_RECT scissorRect;
+
+		ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeap;
+		UINT perInstanceCBVDescSize;
+
 		float time;
 
 		XMMATRIX viewProjectionMatrix;
@@ -53,7 +57,7 @@ public:
 		: DX12RenderPass(device, pipelineState) {}
 
 
-	void Render(const std::vector<RenderObject>& renderObjects, UINT context, ComPtr<ID3D12Device> device, NonIndexedRenderPassArgs args);
+	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, ComPtr<ID3D12Device> device, NonIndexedRenderPassArgs args);
 
 };
 
@@ -75,5 +79,5 @@ public:
 	IndexedRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
 		: DX12RenderPass(device, pipelineState) {}
 
-	void Render(const std::vector<RenderObject>& renderObjects, UINT context, ComPtr<ID3D12Device> device, IndexedRenderPassArgs args);
+	void Render(const RenderObject renderObject, const std::vector<RenderInstance>& renderInstances, UINT context, ComPtr<ID3D12Device> device, IndexedRenderPassArgs args);
 };

@@ -23,6 +23,7 @@ bool RunApp(Core::Window& window)
 	{
 		window.ProcessMessages();
 
+		renderer.Update();
 		renderer.Render();
 	}
 

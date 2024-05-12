@@ -16,8 +16,6 @@ using Microsoft::WRL::ComPtr;
 
 constexpr UINT BufferCount = 2;
 
-typedef UINT ShaderPipelineStateType;
-
 template<typename T> DXGI_FORMAT GetDXGIFormat() { throw std::exception("Unsupported type"); }
 
 // TODO: move this to a more appropriate place.
@@ -64,6 +62,7 @@ public:
 	static void Init(UINT width, UINT height, HWND windowHandle);
 	static DX12Renderer& Get();
 
+	void Update();
 	void Render();
 
 private:
@@ -82,15 +81,18 @@ private:
 	void CreateDepthBuffer();
 	void CreateDSVHeap();
 	void CreateDSV();
-
+	void CreateConstantBuffers();
+	void CreateCBVSRVUAVHeap();
+	void CreateCBV();
 
 	void InitAssets();
 	void CreateRootSignatures();
 	void CreatePSOs();
-	void CreateConstantBuffers();
 	void CreateRenderObjects();
 	void CreateCamera();
 	void CreateRenderInstances();
+
+	void UpdateInstanceConstantBuffers();
 
 	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology);
 	RenderObject CreateRenderObjectFromOBJ(const std::string& objPath, D3D12_PRIMITIVE_TOPOLOGY topology);
@@ -120,7 +122,8 @@ private:
 	ComPtr<ID3D12Resource> m_depthBuffer;
 
 	ComPtr<ID3D12DescriptorHeap> m_cbvSrvUavHeap;
-	GPUResource m_instanceUploadBuffer;
+	UINT m_cbvSrvUavDescriptorSize;
+	GPUResource m_perInstanceCB;
 
 	std::unordered_map<RenderPassType, std::unique_ptr<DX12RenderPass>> m_renderPasses;
 	ComPtr<ID3D12RootSignature> m_rootSignature;
@@ -128,9 +131,9 @@ private:
 	// Synchronization objects.
 	DX12SyncHandler m_syncHandler;
 
-	std::unordered_map<RenderObjectID, RenderObject> m_renderObjects;
-	std::unordered_map<RenderObjectID, std::vector<RenderInstance>> m_renderInstances;
-	std::unordered_map<ShaderPipelineStateType, std::vector<RenderObjectID>> m_renderInstancesByPipelineState;
+	std::unordered_map<RenderObjectID, RenderObject> m_renderObjectsByID;
+	std::unordered_map<RenderObjectID, std::vector<RenderInstance>> m_renderInstancesByID;
+	std::unordered_map<RenderPassType, std::vector<RenderObjectID>> m_renderObjectIDsByRenderPassType;
 
 	Camera* m_activeCamera;
 	std::vector<Camera> m_cameras;
