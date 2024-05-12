@@ -41,6 +41,15 @@ namespace DX12Abstractions
 	}
 #endif
 
+	constexpr uint32_t CalculateConstantBufferByteSize(const uint32_t byteSize)
+	{
+		// Constant buffers must be a multiple of the minimum hardware
+		// allocation size (usually 256 bytes). So round up to nearest
+		// multiple of 256. We do this by adding 255 and then masking off
+		// the lower 2 bytes which store all bits < 256.
+		return (byteSize + 255) & ~255;
+	}
+
 }
 
 // Naming helper for ComPtr<T>.
@@ -48,6 +57,8 @@ namespace DX12Abstractions
 // The indexed variant will include the index in the name of the object.
 #define NAME_D3D12_OBJECT(x) DX12Abstractions::SetName((x).Get(), L#x)
 #define NAME_D3D12_OBJECT_MEMBER(x, className) DX12Abstractions::SetName((x).Get(), L#className L"::" L#x)
+
+// The macros bellow were made by myself to better identify where objects originated from when debugging.
 #define NAME_D3D12_OBJECT_FUNC(x, funcName) DX12Abstractions::SetName((x).Get(), L#funcName L"()::" L#x)
 #define NAME_D3D12_OBJECT_INDEXED(x, n) DX12Abstractions::SetNameIndexed((x)[n].Get(), L#x, n)
 #define NAME_D3D12_OBJECT_MEMBER_INDEXED(x, n, className) DX12Abstractions::SetNameIndexed((x)[n].Get(), L#className L"::" L#x, n)

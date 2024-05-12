@@ -11,7 +11,7 @@
 constexpr const char* AssetsPath = "../../../../assets/";
 
 // The number of contexts that the program uses.
-constexpr uint32_t NumContexts = 1u;
+constexpr uint32_t NumContexts = 2u;
 
 // A unique identifier for each type of render pass.
 enum RenderPassType : uint32_t
@@ -20,4 +20,19 @@ enum RenderPassType : uint32_t
 	IndexedPass,
 
 	NumRenderPasses // Keep this last!
+};
+
+// The maximum number of instances that can be rendered in a single draw call.
+constexpr uint32_t MaxInstances = 32u;
+
+struct InstanceData
+{
+	DirectX::XMFLOAT4X4 modelMatrix;
+};
+
+enum class RenderObjectID : uint32_t
+{
+	Triangle = 0u,
+	Cube,
+	OBJModel1
 };

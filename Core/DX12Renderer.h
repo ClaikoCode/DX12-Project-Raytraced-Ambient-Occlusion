@@ -41,7 +41,7 @@ public:
 
 	ID3D12CommandQueue* Get() const;
 
-	void Reset();
+	void ResetAllocator();
 	// Assumes that the command list used is a command list previously created by this class.
 	void ResetCommandList(ComPtr<ID3D12GraphicsCommandList1> commandList);
 
@@ -87,8 +87,10 @@ private:
 	void InitAssets();
 	void CreateRootSignatures();
 	void CreatePSOs();
+	void CreateConstantBuffers();
 	void CreateRenderObjects();
 	void CreateCamera();
+	void CreateRenderInstances();
 
 	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology);
 	RenderObject CreateRenderObjectFromOBJ(const std::string& objPath, D3D12_PRIMITIVE_TOPOLOGY topology);
@@ -111,10 +113,14 @@ private:
 
 	ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
 	UINT m_rtvDescriptorSize;
+
 	std::array<DX12Abstractions::GPUResource, BufferCount> m_renderTargets;
 
 	ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
 	ComPtr<ID3D12Resource> m_depthBuffer;
+
+	ComPtr<ID3D12DescriptorHeap> m_cbvSrvUavHeap;
+	GPUResource m_instanceUploadBuffer;
 
 	std::unordered_map<RenderPassType, std::unique_ptr<DX12RenderPass>> m_renderPasses;
 	ComPtr<ID3D12RootSignature> m_rootSignature;
@@ -122,7 +128,9 @@ private:
 	// Synchronization objects.
 	DX12SyncHandler m_syncHandler;
 
-	std::unordered_map<ShaderPipelineStateType, std::vector<RenderObject>> m_renderObjectsByPipelineState;
+	std::unordered_map<RenderObjectID, RenderObject> m_renderObjects;
+	std::unordered_map<RenderObjectID, std::vector<RenderInstance>> m_renderInstances;
+	std::unordered_map<ShaderPipelineStateType, std::vector<RenderObjectID>> m_renderInstancesByPipelineState;
 
 	Camera* m_activeCamera;
 	std::vector<Camera> m_cameras;

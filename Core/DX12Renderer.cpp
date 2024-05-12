@@ -5,6 +5,7 @@
 
 #include "GraphicsErrorHandling.h"
 #include "DX12AbstractionUtils.h"
+#include "AppDefines.h"
 #include "tiny_obj_loader.h"
 
 // TODO: Move this when more cohesive use is found.
@@ -79,8 +80,10 @@ void DX12Renderer::Render()
 	// Store command lists for each render pass.
 	std::vector<ComPtr<ID3D12CommandList>> commandLists;
 
+	// Before render pass setup.
 	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPre = m_directCommandQueue.CreateCommandList(m_device);
 
+	// After render pass setup.
 	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPost = m_directCommandQueue.CreateCommandList(m_device);
 
 	// Fetch the current back buffer that we want to render to.
@@ -97,8 +100,7 @@ void DX12Renderer::Render()
 	const CD3DX12_CPU_DESCRIPTOR_HANDLE dsv(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
 
 	// Reset command allocator.
-	m_directCommandQueue.Reset();
-	
+	m_directCommandQueue.ResetAllocator();
 	
 	// Pre render pass setup.
 	{
@@ -157,10 +159,19 @@ void DX12Renderer::Render()
 		for (RenderPassType renderPass : renderPassOrder)
 		{
 			DX12RenderPass& pass = *m_renderPasses[renderPass];
-			std::vector<RenderObject>& renderObjects = m_renderObjectsByPipelineState[renderPass];
+
+			// Temp code, remove later.
+			std::vector<RenderObjectID>& renderObjectIDs = m_renderInstancesByPipelineState[renderPass];
+			std::vector<RenderObject> renderObjects;
+			for (const auto& renderObjectID : renderObjectIDs)
+			{
+				renderObjects.push_back(m_renderObjects[renderObjectID]);
+			}
 
 			if (renderPass == NonIndexedPass)
 			{
+				
+
 				NonIndexedRenderPass& nonIndexedRenderPass = static_cast<NonIndexedRenderPass&>(pass);
 				NonIndexedRenderPass::NonIndexedRenderPassArgs args;
 
@@ -252,6 +263,7 @@ void DX12Renderer::Render()
 
 	// Wait for the command queue to finish.
 	m_directCommandQueue.Wait(nullptr);
+
 }
 
 DX12Renderer::~DX12Renderer()
@@ -346,11 +358,10 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 
 	NAME_D3D12_OBJECT_MEMBER(m_device, DX12Renderer);
 
-	// Create command queue.
+	// Create command queues.
 	{
 		m_directCommandQueue = CommandQueueHandler(m_device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
 		m_copyCommandQueue = CommandQueueHandler(m_device.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
-		
 	}
 
 	// Create swap chain.
@@ -469,8 +480,10 @@ void DX12Renderer::InitAssets()
 {
 	CreateRootSignatures();
 	CreatePSOs();
+	CreateConstantBuffers();
 	CreateRenderObjects();
 	CreateCamera();
+	CreateRenderInstances();
 }
 
 void DX12Renderer::CreateRootSignatures()
@@ -582,6 +595,34 @@ void DX12Renderer::CreatePSOs()
 }
 
 
+void DX12Renderer::CreateConstantBuffers()
+{
+	constexpr UINT instanceElementSize = DX12Abstractions::CalculateConstantBufferByteSize(sizeof(InstanceData));
+	const UINT instanceBufferSize = instanceElementSize * MaxInstances;
+
+	const CD3DX12_RESOURCE_DESC constantBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(instanceBufferSize);
+
+	m_instanceUploadBuffer = CreateUploadResource(m_device, constantBufferDesc);
+	NAME_D3D12_OBJECT_MEMBER(m_instanceUploadBuffer, DX12Renderer);
+
+	// Map and initialize the constant buffer.
+	{
+		InstanceData* pConstantBufferData;
+		m_instanceUploadBuffer.resource->Map(0, nullptr, reinterpret_cast<void**>(&pConstantBufferData)) >> CHK_HR;
+
+		dx::XMMATRIX modelMatrix = dx::XMMatrixIdentity();
+
+		for (UINT i = 0; i < MaxInstances; i++)
+		{
+			// No need to transpose the matrix since it's identity.
+			dx::XMStoreFloat4x4(&pConstantBufferData[i].modelMatrix, modelMatrix);
+		}
+
+		m_instanceUploadBuffer.resource->Unmap(0, nullptr);
+	}
+
+}
+
 void DX12Renderer::CreateRenderObjects()
 {
 	{
@@ -591,8 +632,9 @@ void DX12Renderer::CreateRenderObjects()
 			{ { -0.43f, -0.25f, 0.0f }, { 0.0f, 1.0f, 0.0f } } // left
 		} };
 
-		RenderObject nonIndexedObject = CreateRenderObject(&triangleData, nullptr, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		m_renderObjectsByPipelineState[NonIndexedPass].push_back(nonIndexedObject);
+
+		m_renderObjects[RenderObjectID::Triangle] = CreateRenderObject(&triangleData, nullptr, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		m_renderInstancesByPipelineState[NonIndexedPass].push_back(RenderObjectID::Triangle);
 	}
 
 	{
@@ -616,29 +658,42 @@ void DX12Renderer::CreateRenderObjects()
 				4, 0, 3, 4, 3, 7  // bottom face
 		};
 
-		RenderObject cube = CreateRenderObject(&cubeData, &cubeIndices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		//m_renderObjectsByPipelineState[IndexedPass].push_back(cube);
+		m_renderObjects[RenderObjectID::Cube] = CreateRenderObject(&cubeData, &cubeIndices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		m_renderInstancesByPipelineState[IndexedPass].push_back(RenderObjectID::Cube);
 	}
 
 	// Add obj model.
 	{
-		std::string modelPath = std::string(AssetsPath) + "teapot.obj";
-		RenderObject object = CreateRenderObjectFromOBJ(modelPath, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		m_renderObjectsByPipelineState[IndexedPass].push_back(object);
+		std::string modelPath = std::string(AssetsPath) + "Koltuk.obj";
+		m_renderObjects[RenderObjectID::OBJModel1] = CreateRenderObjectFromOBJ(modelPath, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		m_renderInstancesByPipelineState[IndexedPass].push_back(RenderObjectID::OBJModel1);
 	}
 }
 
 void DX12Renderer::CreateCamera()
 {
 	const float aspectRatio = static_cast<float>(m_width) / static_cast<float>(m_height);
-	const float nearZ = 0.01f;
-	const float farZ = 1000.0f;
-	const float fov = XMConvertToRadians(90.0f);
+	constexpr float nearZ = 0.01f;
+	constexpr float farZ = 1000.0f;
+	constexpr float fov = XMConvertToRadians(90.0f);
 
 	m_cameras.push_back(Camera(fov, aspectRatio, nearZ, farZ));
 	m_activeCamera = &m_cameras[0];
 
 	m_activeCamera->SetPosAndDir({ 0.0f, 0.0f, -5.0f }, { 0.0f, 0.0f, 1.0f });
+}
+
+void DX12Renderer::CreateRenderInstances()
+{
+	static uint32_t sInstanceCount = 0u;
+
+	{
+		RenderInstance triangleInstance = {};
+		triangleInstance.CBIndex = sInstanceCount++;
+
+		InstanceData instanceData = {};
+		dx::XMStoreFloat4x4(&instanceData.modelMatrix, dx::XMMatrixIdentity());
+	}
 }
 
 RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology)
@@ -649,11 +704,11 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 	// Using command list '1' closes the command list immediately and 
 	// doesn't require a command allocator as input, which usually is replaced either way.
 	ComPtr<ID3D12GraphicsCommandList1> copyCommandList = m_copyCommandQueue.CreateCommandList(m_device);
-	m_copyCommandQueue.Reset();
+	m_copyCommandQueue.ResetAllocator();
 	m_copyCommandQueue.ResetCommandList(copyCommandList);
 
 	ComPtr<ID3D12GraphicsCommandList1> directCommandList = m_directCommandQueue.CreateCommandList(m_device);
-	m_directCommandQueue.Reset();
+	m_directCommandQueue.ResetAllocator();
 	m_directCommandQueue.ResetCommandList(directCommandList);
 
 	UINT vertexCount = 0;
@@ -844,7 +899,7 @@ ID3D12CommandQueue* CommandQueueHandler::Get() const
 	return commandQueue.Get();
 }
 
-void CommandQueueHandler::Reset()
+void CommandQueueHandler::ResetAllocator()
 {
 	commandAllocator->Reset() >> CHK_HR;
 }

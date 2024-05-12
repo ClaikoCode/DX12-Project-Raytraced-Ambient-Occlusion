@@ -4,6 +4,7 @@
 
 #include "DirectXIncludes.h"
 #include "GPUResource.h"
+#include "AppDefines.h"
 
 using Microsoft::WRL::ComPtr;
 using DX12Abstractions::GPUResource;
@@ -29,4 +30,10 @@ struct RenderObject
 
 	std::vector<DrawArgs> drawArgs;
 	D3D12_PRIMITIVE_TOPOLOGY topology;
+};
+
+struct RenderInstance
+{
+	UINT CBIndex;
+	InstanceData instanceData;
 };

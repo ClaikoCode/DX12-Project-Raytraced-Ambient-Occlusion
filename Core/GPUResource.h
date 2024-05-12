@@ -41,7 +41,7 @@ namespace DX12Abstractions
 	{
 		CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(size);
 		uploadBuffer = CreateUploadResource(device, bufferDesc);
-		MapDataToBuffer(uploadBuffer, data, size);
+		MapDataToBuffer<T>(uploadBuffer, data, size);
 		
 		destBuffer = CreateDefaultResource(device, bufferDesc);
 
