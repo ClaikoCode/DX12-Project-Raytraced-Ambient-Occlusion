@@ -165,15 +165,35 @@ void DX12Renderer::Render()
 		{
 			DX12RenderPass& pass = *m_renderPasses[renderPassType];
 
-			// Temp code, remove later.
-			//std::vector<RenderObjectID>& renderObjectIDs = m_renderInstancesByPipelineState[renderPassType];
-			//std::vector<RenderObject> renderObjects;
-			//for (const auto& renderObjectID : renderObjectIDs)
-			//{
-			//	renderObjects.push_back(m_renderObjectsByID[renderObjectID]);
-			//}
+			// Common args for all passes.
+			CommonRenderPassArgs commonArgs = {
+				rtv,
+				dsv,
+				m_rootSignature,
+				m_viewport,
+				m_scissorRect,
+				m_cbvSrvUavHeap,
+				m_cbvSrvUavDescriptorSize,
+				t,
+				m_activeCamera->GetViewProjectionMatrix()
+			};
 
-			const std::vector<RenderObjectID>& objectIDs = m_renderObjectIDsByRenderPassType[renderPassType];
+			const std::vector<RenderObjectID>& passObjectIDs = m_renderObjectIDsByRenderPassType[renderPassType];
+
+			// Build render packages to send to render.
+			std::vector<RenderPackage> renderPackages;
+			for (RenderObjectID renderID : passObjectIDs)
+			{
+				RenderObject& renderObject = m_renderObjectsByID[renderID];
+				std::vector<RenderInstance>& instances = m_renderInstancesByID[renderID];
+
+				RenderPackage renderPackage = {
+					.renderObject = &renderObject,
+					.renderInstances = &instances
+				};
+
+				renderPackages.push_back(std::move(renderPackage));
+			}
 
 			if (renderPassType == NonIndexedPass)
 			{
@@ -181,33 +201,7 @@ void DX12Renderer::Render()
 				NonIndexedRenderPass::NonIndexedRenderPassArgs args;
 
 				// Add state args.
-				args.time = t;
-				args.renderTargetView = rtv;
-				args.depthStencilView = dsv;
-				args.rootSignature = m_rootSignature;
-				args.viewport = m_viewport;
-				args.scissorRect = m_scissorRect;
-
-				args.cbvSrvUavHeap = m_cbvSrvUavHeap;
-				args.perInstanceCBVDescSize = m_cbvSrvUavDescriptorSize;
-
-				// Add view projection matrix.
-				args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
-
-				// Build render packages to send to render.
-				std::vector<RenderPackage> renderPackages;
-				for (RenderObjectID renderID : objectIDs)
-				{
-					RenderObject& renderObject = m_renderObjectsByID[renderID];
-					std::vector<RenderInstance>& instances = m_renderInstancesByID[renderID];
-
-					RenderPackage renderPackage = {
-						.renderObject = &renderObject,
-						.renderInstances = &instances
-					};
-
-					renderPackages.push_back(std::move(renderPackage));
-				}
+				args.commonArgs = commonArgs;
 
 				// Render all render packages.
 				nonIndexedRenderPass.Render(renderPackages, context, m_device, args);
@@ -217,24 +211,16 @@ void DX12Renderer::Render()
 			}
 			else if (renderPassType == IndexedPass)
 			{
-				//IndexedRenderPass& indexedRenderPass = static_cast<IndexedRenderPass&>(pass);
-				//IndexedRenderPass::IndexedRenderPassArgs args;
-				//
-				//// Add state args.
-				//args.time = t;
-				//args.renderTargetView = rtv;
-				//args.depthStencilView = dsv;
-				//args.rootSignature = m_rootSignature;
-				//args.viewport = m_viewport;
-				//args.scissorRect = m_scissorRect;
-				//
-				//// Add view projection matrix.
-				//args.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix();
-				//
-				//indexedRenderPass.Render(TODO, renderObjects, context, m_device, args);
-				//
-				//// Signal that pass is done.
-				//m_syncHandler.SetPass(context, renderPassType);
+				IndexedRenderPass& indexedRenderPass = static_cast<IndexedRenderPass&>(pass);
+				IndexedRenderPass::IndexedRenderPassArgs args;
+				
+				// Add state args.
+				args.commonArgs = commonArgs;
+				
+				indexedRenderPass.Render(renderPackages, context, m_device, args);
+				
+				// Signal that pass is done.
+				m_syncHandler.SetPass(context, renderPassType);
 			}
 			else
 			{
@@ -761,35 +747,92 @@ void DX12Renderer::CreateCamera()
 	m_cameras.push_back(Camera(fov, aspectRatio, nearZ, farZ));
 	m_activeCamera = &m_cameras[0];
 
-	m_activeCamera->SetPosAndDir({ 0.0f, 0.0f, -5.0f }, { 0.0f, 0.0f, 1.0f });
+	m_activeCamera->SetPosAndDir({ 0.0f, 0.0f, -10.0f }, { 0.0f, 0.0f, 1.0f });
 }
 
 void DX12Renderer::CreateRenderInstances()
 {
+	static UINT renderInstanceCount = 0;
+
+	// Triangles.
 	{
 		std::vector<RenderInstance>& renderInstances = m_renderInstancesByID[RenderObjectID::Triangle];
 
-		RenderInstance triangleInstance = {};
+		RenderInstance renderInstance = {};
 
-		triangleInstance.CBIndex = renderInstances.size();
-		dx::XMStoreFloat4x4(&triangleInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(5.0f, 0.0f, 0.0f));
-		renderInstances.push_back(triangleInstance);
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(3.0f, 0.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
 
-		triangleInstance.CBIndex = renderInstances.size();
-		dx::XMStoreFloat4x4(&triangleInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-5.0f, 0.0f, 0.0f));
-		renderInstances.push_back(triangleInstance);
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-3.0f, 0.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
 
-		triangleInstance.CBIndex = renderInstances.size();
-		dx::XMStoreFloat4x4(&triangleInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-7.0f, 0.0f, 0.0f));
-		renderInstances.push_back(triangleInstance);
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-6.0f, 0.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
 
-		triangleInstance.CBIndex = renderInstances.size();
-		dx::XMStoreFloat4x4(&triangleInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(7.0f, 0.0f, 0.0f));
-		renderInstances.push_back(triangleInstance);
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(6.0f, 0.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
 
-		triangleInstance.CBIndex = renderInstances.size();
-		dx::XMStoreFloat4x4(&triangleInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(0.0f, 5.0f, 0.0f));
-		renderInstances.push_back(triangleInstance);
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(0.0f, 0.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
+	}
+
+	// Cubes.
+	{
+		std::vector<RenderInstance>& renderInstances = m_renderInstancesByID[RenderObjectID::Cube];
+
+		RenderInstance renderInstance = {};
+
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(3.0f, 3.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
+
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-3.0f, 3.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
+
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-6.0f, 3.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
+
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(6.0f, 3.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
+
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(0.0f, 3.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
+	}
+
+	// OBJ models.
+	{
+		std::vector<RenderInstance>& renderInstances = m_renderInstancesByID[RenderObjectID::OBJModel1];
+
+		RenderInstance renderInstance = {};
+
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(3.0f, -3.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
+
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-3.0f, -3.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
+
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-6.0f, -3.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
+
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(6.0f, -3.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
+
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(0.0f, -3.0f, 0.0f));
+		renderInstances.push_back(renderInstance);
 	}
 }
 
