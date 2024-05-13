@@ -2,18 +2,13 @@
 
 add_custom_target(Shaders)
 
-# Macro to set shader type properties
-macro(set_shader_properties SHADER_LIST SHADER_TYPE)
-    set_source_files_properties(${SHADER_LIST} PROPERTIES ShaderType ${SHADER_TYPE})
-endmacro()
-
 # Set shader files
 set(HLSL_VERTEX_SHADERS VertexShader.hlsl)
-set(HLSL_PIXEL_SHADERS PixelShader.hlsl)
+set(HLSL_PIXEL_SHADERS PixelShader.hlsl DeferredPixelShader.hlsl)
 
-# Set shade type properties
-set_shader_properties(${HLSL_VERTEX_SHADERS} "vs")
-set_shader_properties(${HLSL_PIXEL_SHADERS} "ps")
+# Set shader type properties
+set_source_files_properties(${HLSL_VERTEX_SHADERS} PROPERTIES ShaderType "vs")
+set_source_files_properties(${HLSL_PIXEL_SHADERS} PROPERTIES ShaderType "ps")
 
 # Combine all shader files
 set(HLSL_SHADER_FILES ${HLSL_VERTEX_SHADERS} ${HLSL_PIXEL_SHADERS})

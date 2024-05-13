@@ -204,7 +204,7 @@ void DX12Renderer::Render()
 				args.commonArgs = commonArgs;
 
 				// Render all render packages.
-				nonIndexedRenderPass.Render(renderPackages, context, m_device, args);
+				nonIndexedRenderPass.Render(renderPackages, context, &args);
 				
 				// Signal that pass is done.
 				m_syncHandler.SetPass(context, renderPassType);
@@ -217,7 +217,7 @@ void DX12Renderer::Render()
 				// Add state args.
 				args.commonArgs = commonArgs;
 				
-				indexedRenderPass.Render(renderPackages, context, m_device, args);
+				indexedRenderPass.Render(renderPackages, context, &args);
 				
 				// Signal that pass is done.
 				m_syncHandler.SetPass(context, renderPassType);
@@ -728,6 +728,11 @@ void DX12Renderer::CreatePSOs()
 		CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
 	} pipelineStateStream;
 
+	const D3D12_PIPELINE_STATE_STREAM_DESC pipelineStateStreamDesc = {
+			.SizeInBytes = sizeof(PipelineStateStream),
+			.pPipelineStateSubobjectStream = &pipelineStateStream
+	};
+
 	const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 		{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -754,29 +759,22 @@ void DX12Renderer::CreatePSOs()
 			.NumRenderTargets = 1
 		};
 
-		const D3D12_PIPELINE_STATE_STREAM_DESC pipelineStateStreamDesc = {
-			.SizeInBytes = sizeof(PipelineStateStream),
-			.pPipelineStateSubobjectStream = &pipelineStateStream
-		};
-
-
 		ComPtr<ID3D12PipelineState> defaultPipelineState;
 		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&defaultPipelineState)) >> CHK_HR;
 
 		NAME_D3D12_OBJECT(defaultPipelineState);
 
-		m_renderPasses[NonIndexedPass] = std::make_unique<NonIndexedRenderPass>(m_device.Get(), defaultPipelineState);
-		m_syncHandler.AddUniquePassSync(NonIndexedPass);
-
-		m_renderPasses[IndexedPass] = std::make_unique<IndexedRenderPass>(m_device.Get(), defaultPipelineState);
-		m_syncHandler.AddUniquePassSync(IndexedPass);
+		AddRenderPass(NonIndexedPass, defaultPipelineState);
+		AddRenderPass(IndexedPass, defaultPipelineState);
 	}
 	
 
 	// Deferred pass settings.
 	{
 		D3D12_RT_FORMAT_ARRAY formatArr;
-		formatArr.NumRenderTargets = 0;
+		memset(&formatArr, 0, sizeof(formatArr)); // Initialize memory with 0.
+
+		// Set the format of each gbuffer.
 		for (UINT i = 0; i < GBufferCount; i++)
 		{
 			formatArr.RTFormats[i] = GBufferFormats[i];
@@ -788,12 +786,19 @@ void DX12Renderer::CreatePSOs()
 
 		ComPtr<ID3DBlob> vsBlob;
 		D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
-
+		
 		ComPtr<ID3DBlob> psBlob;
 		D3DReadFileToBlob(L"../DeferredPixelShader.cso", &psBlob) >> CHK_HR;
-
+		
 		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
 		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
+
+		ComPtr<ID3D12PipelineState> deferredPipelineState;
+		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&deferredPipelineState)) >> CHK_HR;
+
+		NAME_D3D12_OBJECT(deferredPipelineState);
+
+		AddRenderPass(DeferredPass, deferredPipelineState);
 	}
 
 }
@@ -965,6 +970,30 @@ void DX12Renderer::UpdateInstanceConstantBuffers()
 	}
 
 	m_perInstanceCB.resource->Unmap(0, nullptr);
+}
+
+#define CaseAddRenderPass(renderpasstype, renderclass) \
+case renderpasstype: \
+	m_renderPasses[renderpasstype] = std::make_unique<renderclass>(m_device.Get(), pipelineState); \
+	m_syncHandler.AddUniquePassSync(renderpasstype); \
+	break
+
+void DX12Renderer::AddRenderPass(const RenderPassType renderPassType, ComPtr<ID3D12PipelineState> pipelineState)
+{
+	switch (renderPassType)
+	{
+		CaseAddRenderPass(DeferredPass, DeferredRenderPass);
+
+		CaseAddRenderPass(NonIndexedPass, NonIndexedRenderPass);
+
+		CaseAddRenderPass(IndexedPass, IndexedRenderPass);
+
+	default:
+		// TODO: Handle this error better.
+		assert(false);
+		break;
+	}
+
 }
 
 RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology)

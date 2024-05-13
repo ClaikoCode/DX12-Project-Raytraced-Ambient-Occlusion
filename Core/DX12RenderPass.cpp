@@ -54,13 +54,11 @@ DX12RenderPass::DX12RenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState>
 void DX12RenderPass::Init()
 {
 	// Reset the command lists and allocators.
-
 	for (UINT i = 0; i < NumContexts; i++)
 	{
 		commandAllocators[i]->Reset() >> CHK_HR;
 		commandLists[i]->Reset(commandAllocators[i].Get(), m_pipelineState.Get()) >> CHK_HR;
 	}
-
 }
 
 void DX12RenderPass::Close(UINT context)
@@ -68,10 +66,14 @@ void DX12RenderPass::Close(UINT context)
 	commandLists[context]->Close() >> CHK_HR;
 }
 
-void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, ComPtr<ID3D12Device> device, NonIndexedRenderPassArgs args)
+void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, void* pipelineSpecificArgs)
 {
-	auto commandList = commandLists[context];
+	// TODO: Handle this error better.
+	assert(pipelineSpecificArgs != nullptr);
+
+	NonIndexedRenderPassArgs args = ToSpecificArgs<NonIndexedRenderPassArgs>(pipelineSpecificArgs);
 	
+	auto commandList = commandLists[context];
 	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
 
 	// Draw.
@@ -81,8 +83,7 @@ void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackag
 		{
 			const RenderObject& renderObject = *renderPackage.renderObject;
 
-			commandList->IASetPrimitiveTopology(renderObject.topology);
-			commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
+			PerRenderObject(renderObject, pipelineSpecificArgs, context);
 
 			const std::vector<DrawArgs>& drawArgs = renderObject.drawArgs;
 
@@ -92,36 +93,56 @@ void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackag
 			
 				for (const RenderInstance& renderInstance : renderInstances)
 				{
-					auto instanceCBVHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-					instanceCBVHandle.Offset(renderInstance.CBIndex, args.commonArgs.perInstanceCBVDescSize);
-					commandList->SetGraphicsRootDescriptorTable(
-						RootSigRegisters::CBRegisters::CBDescriptorTable, 
-						instanceCBVHandle
-					);
-
-					for (UINT i = context; i < drawArgs.size(); i += NumContexts)
-					{
-						const DrawArgs& drawArg = drawArgs[i];
-
-						commandList->DrawInstanced(
-							drawArg.vertexCount,
-							1,
-							drawArg.startVertex,
-							drawArg.startInstance
-						);
-					}
+					PerRenderInstance(renderInstance, drawArgs, pipelineSpecificArgs, context);
 				}
 			}
 		}
 	}
 }
 
-void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, ComPtr<ID3D12Device> device, IndexedRenderPassArgs args)
+void NonIndexedRenderPass::PerRenderObject(const RenderObject& renderObject, void* pipelineSpecificArgs, UINT context)
 {
-	auto& commandList = commandLists[context];
-	
+	NonIndexedRenderPassArgs args = ToSpecificArgs<NonIndexedRenderPassArgs>(pipelineSpecificArgs);
+	auto commandList = commandLists[context];
+
+	commandList->IASetPrimitiveTopology(renderObject.topology);
+	commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
+}
+
+void NonIndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, void* pipelineSpecificArgs, UINT context)
+{
+	NonIndexedRenderPassArgs args = ToSpecificArgs<NonIndexedRenderPassArgs>(pipelineSpecificArgs);
+	auto commandList = commandLists[context];
+
+	auto instanceCBVHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
+	instanceCBVHandle.Offset(renderInstance.CBIndex, args.commonArgs.perInstanceCBVDescSize);
+	commandList->SetGraphicsRootDescriptorTable(
+		RootSigRegisters::CBRegisters::CBDescriptorTable,
+		instanceCBVHandle
+	);
+
+	for (UINT i = context; i < drawArgs.size(); i += NumContexts)
+	{
+		const DrawArgs& drawArg = drawArgs[i];
+
+		commandList->DrawInstanced(
+			drawArg.vertexCount,
+			1,
+			drawArg.startVertex,
+			drawArg.startInstance
+		);
+	}
+}
+
+void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, void* pipelineSpecificArgs)
+{
+	// TODO: Handle this error better.
+	assert(pipelineSpecificArgs != nullptr);
+	IndexedRenderPassArgs& args = *reinterpret_cast<IndexedRenderPassArgs*>(pipelineSpecificArgs);
+
+	auto commandList = commandLists[context];
 	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
-	
+
 	// Draw.
 	for (const RenderPackage& renderPackage : renderPackages)
 	{
@@ -129,9 +150,7 @@ void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages,
 		{
 			const RenderObject& renderObject = *renderPackage.renderObject;
 
-			commandList->IASetPrimitiveTopology(renderObject.topology);
-			commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
-			commandList->IASetIndexBuffer(&renderObject.indexBufferView);
+			PerRenderObject(renderObject, pipelineSpecificArgs, context);
 
 			const std::vector<DrawArgs>& drawArgs = renderObject.drawArgs;
 
@@ -141,28 +160,60 @@ void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages,
 
 				for (const RenderInstance& renderInstance : renderInstances)
 				{
-					auto instanceCBVHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-					instanceCBVHandle.Offset(renderInstance.CBIndex, args.commonArgs.perInstanceCBVDescSize);
-					commandList->SetGraphicsRootDescriptorTable(
-						RootSigRegisters::CBRegisters::CBDescriptorTable,
-						instanceCBVHandle
-					);
-
-					for (UINT i = context; i < drawArgs.size(); i += NumContexts)
-					{
-						const DrawArgs& drawArg = drawArgs[i];
-
-						commandList->DrawIndexedInstanced(
-							drawArg.indexCount,
-							1,
-							drawArg.startIndex,
-							drawArg.baseVertex,
-							drawArg.startInstance
-						);
-					}
+					PerRenderInstance(renderInstance, drawArgs, pipelineSpecificArgs, context);
 				}
 			}
 		}
 	}
 }
 
+void IndexedRenderPass::PerRenderObject(const RenderObject& renderObject, void* pipelineSpecificArgs, UINT context)
+{
+	IndexedRenderPassArgs args = ToSpecificArgs<IndexedRenderPassArgs>(pipelineSpecificArgs);
+	auto commandList = commandLists[context];
+
+	commandList->IASetPrimitiveTopology(renderObject.topology);
+	commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
+	commandList->IASetIndexBuffer(&renderObject.indexBufferView);
+}
+
+void IndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, void* pipelineSpecificArgs, UINT context)
+{
+	IndexedRenderPassArgs args = ToSpecificArgs<IndexedRenderPassArgs>(pipelineSpecificArgs);
+	auto commandList = commandLists[context];
+
+	auto instanceCBVHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
+	instanceCBVHandle.Offset(renderInstance.CBIndex, args.commonArgs.perInstanceCBVDescSize);
+	commandList->SetGraphicsRootDescriptorTable(
+		RootSigRegisters::CBRegisters::CBDescriptorTable,
+		instanceCBVHandle
+	);
+
+	for (UINT i = context; i < drawArgs.size(); i += NumContexts)
+	{
+		const DrawArgs& drawArg = drawArgs[i];
+
+		commandList->DrawIndexedInstanced(
+			drawArg.indexCount,
+			1,
+			drawArg.startIndex,
+			drawArg.baseVertex,
+			drawArg.startInstance
+		);
+	}
+}
+
+void DeferredRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, void* pipelineSpecificArgs)
+{
+
+}
+
+void DeferredRenderPass::PerRenderObject(const RenderObject& renderObject, void* pipelineSpecificArgs, UINT context)
+{
+
+}
+
+void DeferredRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, void* pipelineSpecificArgs, UINT context)
+{
+
+}

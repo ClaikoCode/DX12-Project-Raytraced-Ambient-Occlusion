@@ -11,7 +11,9 @@ struct PSOut
     float position : SV_TARGET2;
 };
 
-float4 main(VSOut input)
+PSOut main(VSOut input)
 {
-    return input.color;
+    PSOut OUT;
+
+    return OUT;
 }

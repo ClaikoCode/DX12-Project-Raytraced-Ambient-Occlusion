@@ -33,6 +33,14 @@ struct CommonRenderPassArgs
 
 void SetCommonStates(CommonRenderPassArgs commonArgs, ComPtr<ID3D12PipelineState> pipelineState, ComPtr<ID3D12GraphicsCommandList> commandList);
 
+// Assumes that the void* is not null. This assertion should happen before usage.
+template<typename T>
+T ToSpecificArgs(void* pipelineSpecificArgs)
+{
+	return *reinterpret_cast<T*>(pipelineSpecificArgs);
+}
+
+// Abstract class for a direct render pass.
 class DX12RenderPass
 {
 public:
@@ -41,6 +49,10 @@ public:
 
 	void Init();
 	void Close(UINT context);
+
+	virtual void Render(const std::vector<RenderPackage>& renderPackages, UINT context, void* pipelineSpecificArgs) = 0;
+	virtual void PerRenderObject(const RenderObject& renderObject, void* pipelineSpecificArgs, UINT context) = 0;
+	virtual void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, void* pipelineSpecificArgs, UINT context) = 0;
 
 public:
 
@@ -63,8 +75,10 @@ public:
 	NonIndexedRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState) 
 		: DX12RenderPass(device, pipelineState) {}
 
-
-	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, ComPtr<ID3D12Device> device, NonIndexedRenderPassArgs args);
+	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, void* pipelineSpecificArgs) override final;
+	void PerRenderObject(const RenderObject& renderObject, void* pipelineSpecificArgs, UINT context) override final;
+	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, void* pipelineSpecificArgs, UINT context) override final;
+	
 };
 
 class IndexedRenderPass : public DX12RenderPass
@@ -78,5 +92,23 @@ public:
 	IndexedRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
 		: DX12RenderPass(device, pipelineState) {}
 
-	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, ComPtr<ID3D12Device> device, IndexedRenderPassArgs args);
+	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, void* pipelineSpecificArgs) override final;
+	void PerRenderObject(const RenderObject& renderObject, void* pipelineSpecificArgs, UINT context) override final;
+	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, void* pipelineSpecificArgs, UINT context) override final;
+};
+
+class DeferredRenderPass : public DX12RenderPass
+{
+public:
+	struct DeferredRenderPassArgs
+	{
+		CommonRenderPassArgs commonArgs;
+	};
+
+	DeferredRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
+		: DX12RenderPass(device, pipelineState) {}
+
+	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, void* pipelineSpecificArgs) override final;
+	void PerRenderObject(const RenderObject& renderObject, void* pipelineSpecificArgs, UINT context) override final;
+	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, void* pipelineSpecificArgs, UINT context) override final;
 };
