@@ -300,6 +300,7 @@ DX12Renderer::DX12Renderer(UINT width, UINT height, HWND windowHandle) :
 void DX12Renderer::InitPipeline()
 {
 	CreateDeviceAndSwapChain();
+	CreateGBuffers();
 	CreateRTVHeap();
 	CreateRTVs();
 	CreateDepthBuffer();
@@ -412,11 +413,78 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 	}
 }
 
+void DX12Renderer::CreateGBuffers()
+{
+	CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+	DXGI_FORMAT dxgiFormat = DXGI_FORMAT_UNKNOWN;
+	CD3DX12_RESOURCE_DESC resourceProps = CD3DX12_RESOURCE_DESC::Tex2D(
+		dxgiFormat,
+		m_width,
+		m_height
+	);
+	resourceProps.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+	D3D12_CLEAR_VALUE optimizedClearValue = {
+		.Format = dxgiFormat,
+		.Color = { 0.0f, 1.0f, 0.0f, 1.0f }
+	};
+
+	// Diffuse gbuffer.
+	{
+		dxgiFormat = GBufferFormats[GBufferDiffuse];
+		resourceProps.Format = dxgiFormat;
+		optimizedClearValue.Format = dxgiFormat;
+
+		m_device->CreateCommittedResource(
+			&heapProps,
+			D3D12_HEAP_FLAG_NONE,
+			&resourceProps,
+			D3D12_RESOURCE_STATE_RENDER_TARGET,
+			&optimizedClearValue,
+			IID_PPV_ARGS(&m_gBuffers[GBufferDiffuse])
+		) >> CHK_HR;
+	}
+	
+	// Surface normal gbuffer.
+	{
+		dxgiFormat = GBufferFormats[GBufferNormal];
+		resourceProps.Format = dxgiFormat;
+		optimizedClearValue.Format = dxgiFormat;
+		
+		m_device->CreateCommittedResource(
+			&heapProps,
+			D3D12_HEAP_FLAG_NONE,
+			&resourceProps,
+			D3D12_RESOURCE_STATE_RENDER_TARGET,
+			&optimizedClearValue,
+			IID_PPV_ARGS(&m_gBuffers[GBufferNormal])
+		) >> CHK_HR;
+	}
+
+	// World position gbuffer.
+	{
+		dxgiFormat = GBufferFormats[GBufferWorldPos];
+		resourceProps.Format = dxgiFormat;
+		optimizedClearValue.Format = dxgiFormat;
+
+		m_device->CreateCommittedResource(
+			&heapProps,
+			D3D12_HEAP_FLAG_NONE,
+			&resourceProps,
+			D3D12_RESOURCE_STATE_RENDER_TARGET,
+			&optimizedClearValue,
+			IID_PPV_ARGS(&m_gBuffers[GBufferWorldPos])
+		) >> CHK_HR;
+
+	}
+}
+
 void DX12Renderer::CreateRTVHeap()
 {
+	constexpr UINT totalRTVs = BufferCount + GBufferCount;
 	const D3D12_DESCRIPTOR_HEAP_DESC rtvDescriptorHeapDesc = {
 			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-			.NumDescriptors = BufferCount,
+			.NumDescriptors = totalRTVs,
 			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
 			.NodeMask = 0
 	};
@@ -429,15 +497,28 @@ void DX12Renderer::CreateRTVHeap()
 
 void DX12Renderer::CreateRTVs()
 {
-	CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-
 	for (UINT i = 0; i < BufferCount; i++)
 	{
 		m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_renderTargets[i])) >> CHK_HR;
+
+		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
+		rtvHandle.Offset(i, m_rtvDescriptorSize);
+
 		m_device->CreateRenderTargetView(m_renderTargets[i].Get(), nullptr, rtvHandle);
-		rtvHandle.Offset(1, m_rtvDescriptorSize);
 
 		NAME_D3D12_OBJECT_MEMBER_INDEXED(m_renderTargets, i, DX12Renderer);
+	}
+
+	for (UINT i = 0; i < GBufferCount; i++)
+	{
+		UINT rtvHandleIndex = i + RTVOffsetGBuffers;
+
+		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
+		rtvHandle.Offset(rtvHandleIndex, m_rtvDescriptorSize);
+
+		m_device->CreateRenderTargetView(m_gBuffers[i].Get(), nullptr, rtvHandle);
+
+		NAME_D3D12_OBJECT_MEMBER_INDEXED(m_gBuffers, i, DX12Renderer);
 	}
 }
 
@@ -653,40 +734,68 @@ void DX12Renderer::CreatePSOs()
 		{ "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
 	};
 
-	ComPtr<ID3DBlob> vsBlob;
-	D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
+	// Simple rendering pass.
+	{
+		ComPtr<ID3DBlob> vsBlob;
+		D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
 
-	ComPtr<ID3DBlob> psBlob;
-	D3DReadFileToBlob(L"../PixelShader.cso", &psBlob) >> CHK_HR;
-
-
-	pipelineStateStream.RootSignature = m_rootSignature.Get();
-	pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
-	pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-	pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
-	pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
-	pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-	pipelineStateStream.RTVFormats = {
-		.RTFormats = { DXGI_FORMAT_R8G8B8A8_UNORM },
-		.NumRenderTargets = 1
-	};
-
-	const D3D12_PIPELINE_STATE_STREAM_DESC pipelineStateStreamDesc = {
-		.SizeInBytes = sizeof(PipelineStateStream),
-		.pPipelineStateSubobjectStream = &pipelineStateStream
-	};
+		ComPtr<ID3DBlob> psBlob;
+		D3DReadFileToBlob(L"../PixelShader.cso", &psBlob) >> CHK_HR;
 
 
-	ComPtr<ID3D12PipelineState> pipelineState;
-	m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&pipelineState)) >> CHK_HR;
+		pipelineStateStream.RootSignature = m_rootSignature.Get();
+		pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
+		pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
+		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
+		pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+		pipelineStateStream.RTVFormats = {
+			.RTFormats = { DXGI_FORMAT_R8G8B8A8_UNORM },
+			.NumRenderTargets = 1
+		};
 
-	NAME_D3D12_OBJECT_MEMBER(pipelineState, DX12Renderer);
+		const D3D12_PIPELINE_STATE_STREAM_DESC pipelineStateStreamDesc = {
+			.SizeInBytes = sizeof(PipelineStateStream),
+			.pPipelineStateSubobjectStream = &pipelineStateStream
+		};
 
-	m_renderPasses[NonIndexedPass] = std::make_unique<NonIndexedRenderPass>(m_device.Get(), pipelineState);
-	m_syncHandler.AddUniquePassSync(NonIndexedPass);
 
-	m_renderPasses[IndexedPass] = std::make_unique<IndexedRenderPass>(m_device.Get(), pipelineState);
-	m_syncHandler.AddUniquePassSync(IndexedPass);
+		ComPtr<ID3D12PipelineState> defaultPipelineState;
+		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&defaultPipelineState)) >> CHK_HR;
+
+		NAME_D3D12_OBJECT(defaultPipelineState);
+
+		m_renderPasses[NonIndexedPass] = std::make_unique<NonIndexedRenderPass>(m_device.Get(), defaultPipelineState);
+		m_syncHandler.AddUniquePassSync(NonIndexedPass);
+
+		m_renderPasses[IndexedPass] = std::make_unique<IndexedRenderPass>(m_device.Get(), defaultPipelineState);
+		m_syncHandler.AddUniquePassSync(IndexedPass);
+	}
+	
+
+	// Deferred pass settings.
+	{
+		D3D12_RT_FORMAT_ARRAY formatArr;
+		formatArr.NumRenderTargets = 0;
+		for (UINT i = 0; i < GBufferCount; i++)
+		{
+			formatArr.RTFormats[i] = GBufferFormats[i];
+			formatArr.NumRenderTargets++;
+		}
+		
+		// Set the correct array of RTV formats expected.
+		pipelineStateStream.RTVFormats = formatArr;
+
+		ComPtr<ID3DBlob> vsBlob;
+		D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
+
+		ComPtr<ID3DBlob> psBlob;
+		D3DReadFileToBlob(L"../DeferredPixelShader.cso", &psBlob) >> CHK_HR;
+
+		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
+		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
+	}
+
 }
 
 

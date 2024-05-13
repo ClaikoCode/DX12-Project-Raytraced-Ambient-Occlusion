@@ -55,10 +55,9 @@ namespace DX12Abstractions
 // Naming helper for ComPtr<T>.
 // Assigns the name of the variable as the name of the object.
 // The indexed variant will include the index in the name of the object.
+// NOTE: I've created the following macros myself for more clear debugging: NAME_D3D12_OBJECT_MEMBER, NAME_D3D12_OBJECT_FUNC, NAME_D3D12_OBJECT_MEMBER_INDEXED
 #define NAME_D3D12_OBJECT(x) DX12Abstractions::SetName((x).Get(), L#x)
 #define NAME_D3D12_OBJECT_MEMBER(x, className) DX12Abstractions::SetName((x).Get(), L#className L"::" L#x)
-
-// The macros bellow were made by myself to better identify where objects originated from when debugging.
 #define NAME_D3D12_OBJECT_FUNC(x, funcName) DX12Abstractions::SetName((x).Get(), L#funcName L"()::" L#x)
 #define NAME_D3D12_OBJECT_INDEXED(x, n) DX12Abstractions::SetNameIndexed((x)[n].Get(), L#x, n)
 #define NAME_D3D12_OBJECT_MEMBER_INDEXED(x, n, className) DX12Abstractions::SetNameIndexed((x)[n].Get(), L#className L"::" L#x, n)

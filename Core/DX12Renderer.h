@@ -16,6 +16,22 @@ using Microsoft::WRL::ComPtr;
 
 constexpr UINT BufferCount = 2;
 
+enum GBufferID : UINT
+{
+	GBufferDiffuse = 0,
+	GBufferNormal,
+	GBufferWorldPos,
+
+	GBufferCount // Keep last!
+};
+constexpr std::array<DXGI_FORMAT, GBufferCount> GBufferFormats = { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT };
+
+enum RTVOffsets : UINT
+{
+	RTVOffsetBackBuffers = 0, // Back buffers should always come first for simplicity.
+	RTVOffsetGBuffers = BufferCount
+};
+
 template<typename T> DXGI_FORMAT GetDXGIFormat() { throw std::exception("Unsupported type"); }
 
 // TODO: move this to a more appropriate place.
@@ -76,6 +92,7 @@ private:
 
 	void InitPipeline();
 	void CreateDeviceAndSwapChain();
+	void CreateGBuffers();
 	void CreateRTVHeap();
 	void CreateRTVs();
 	void CreateDepthBuffer();
@@ -116,6 +133,7 @@ private:
 	ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
 	UINT m_rtvDescriptorSize;
 
+	std::array<DX12Abstractions::GPUResource, GBufferCount> m_gBuffers;
 	std::array<DX12Abstractions::GPUResource, BufferCount> m_renderTargets;
 
 	ComPtr<ID3D12DescriptorHeap> m_dsvHeap;

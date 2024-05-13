@@ -65,7 +65,6 @@ public:
 
 
 	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, ComPtr<ID3D12Device> device, NonIndexedRenderPassArgs args);
-
 };
 
 class IndexedRenderPass : public DX12RenderPass

@@ -18,6 +18,7 @@ enum RenderPassType : uint32_t
 {
 	NonIndexedPass = 0u,
 	IndexedPass,
+	DeferredPass,
 
 	NumRenderPasses // Keep this last!
 };
