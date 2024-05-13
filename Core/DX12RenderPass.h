@@ -17,7 +17,6 @@ typedef std::array<ComPtr<ID3D12GraphicsCommandList>, NumContexts> CommandLists;
 
 struct CommonRenderPassArgs 
 {
-	CD3DX12_CPU_DESCRIPTOR_HANDLE renderTargetView;
 	CD3DX12_CPU_DESCRIPTOR_HANDLE depthStencilView;
 	ComPtr<ID3D12RootSignature> rootSignature;
 	CD3DX12_VIEWPORT viewport;
@@ -70,6 +69,8 @@ public:
 	struct NonIndexedRenderPassArgs
 	{
 		CommonRenderPassArgs commonArgs;
+		
+		CD3DX12_CPU_DESCRIPTOR_HANDLE RTV;
 	};
 
 	NonIndexedRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState) 
@@ -87,6 +88,8 @@ public:
 	struct IndexedRenderPassArgs
 	{
 		CommonRenderPassArgs commonArgs;
+
+		CD3DX12_CPU_DESCRIPTOR_HANDLE RTV;
 	};
 
 	IndexedRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
@@ -97,15 +100,17 @@ public:
 	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, void* pipelineSpecificArgs, UINT context) override final;
 };
 
-class DeferredRenderPass : public DX12RenderPass
+class GBufferRenderPass : public DX12RenderPass
 {
 public:
-	struct DeferredRenderPassArgs
+	struct GBufferRenderPassArgs
 	{
 		CommonRenderPassArgs commonArgs;
+
+		CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle;
 	};
 
-	DeferredRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
+	GBufferRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
 		: DX12RenderPass(device, pipelineState) {}
 
 	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, void* pipelineSpecificArgs) override final;

@@ -14,16 +14,7 @@
 
 using Microsoft::WRL::ComPtr;
 
-constexpr UINT BufferCount = 2;
 
-enum GBufferID : UINT
-{
-	GBufferDiffuse = 0,
-	GBufferNormal,
-	GBufferWorldPos,
-
-	GBufferCount // Keep last!
-};
 constexpr std::array<DXGI_FORMAT, GBufferCount> GBufferFormats = { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT };
 
 enum RTVOffsets : UINT
@@ -111,7 +102,9 @@ private:
 
 	void UpdateInstanceConstantBuffers();
 
-	void AddRenderPass(const RenderPassType renderPassType, ComPtr<ID3D12PipelineState> pipelineState);
+	void RegisterRenderPass(const RenderPassType renderPassType, ComPtr<ID3D12PipelineState> pipelineState);
+	
+	void ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList);
 
 	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology);
 	RenderObject CreateRenderObjectFromOBJ(const std::string& objPath, D3D12_PRIMITIVE_TOPOLOGY topology);

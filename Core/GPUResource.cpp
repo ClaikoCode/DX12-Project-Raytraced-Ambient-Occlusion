@@ -4,6 +4,7 @@
 
 #include "GraphicsErrorHandling.h"
 #include "DX12AbstractionUtils.h"
+#include "AppDefines.h"
 
 namespace DX12Abstractions
 {
@@ -49,13 +50,26 @@ namespace DX12Abstractions
 	{
 		GPUResource resource(resourceState);
 
+		D3D12_CLEAR_VALUE* optimizedClearValPtr = nullptr;
+		D3D12_CLEAR_VALUE optimizedClearVal;
+
+		if (resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+		{
+			optimizedClearVal = {
+				.Format = resourceDesc.Format,
+				.Color = { OptimizedClearColor[0], OptimizedClearColor[1],  OptimizedClearColor[2],  OptimizedClearColor[3] }
+			};
+
+			optimizedClearValPtr = &optimizedClearVal;
+		}
+
 		const CD3DX12_HEAP_PROPERTIES heapProps{ heapType };
 		device->CreateCommittedResource1(
 			&heapProps,
 			D3D12_HEAP_FLAG_NONE,
 			&resourceDesc,
 			resourceState,
-			nullptr,
+			optimizedClearValPtr,
 			nullptr,
 			IID_PPV_ARGS(&resource)
 		) >> CHK_HR;

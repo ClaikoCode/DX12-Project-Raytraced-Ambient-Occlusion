@@ -13,9 +13,6 @@ void SetCommonStates(CommonRenderPassArgs commonArgs, ComPtr<ID3D12PipelineState
 	commandList->RSSetViewports(1, &commonArgs.viewport);
 	commandList->RSSetScissorRects(1, &commonArgs.scissorRect);
 
-	// Set render target and depth stencil.
-	commandList->OMSetRenderTargets(1, &commonArgs.renderTargetView, TRUE, &commonArgs.depthStencilView);
-
 	// Set descriptor heap.
 	std::array<ID3D12DescriptorHeap*, 1> descriptorHeaps = { commonArgs.cbvSrvUavHeap.Get() };
 	commandList->SetDescriptorHeaps((UINT)descriptorHeaps.size(), descriptorHeaps.data());
@@ -26,6 +23,32 @@ void SetCommonStates(CommonRenderPassArgs commonArgs, ComPtr<ID3D12PipelineState
 		sizeof(vpMatrix) / sizeof(float),
 		&vpMatrix,
 		0
+	);
+}
+
+void DrawInstanceIndexed(UINT context, const std::vector<DrawArgs>& drawArgs, ComPtr<ID3D12GraphicsCommandList> commandList)
+{
+	for (UINT i = context; i < drawArgs.size(); i += NumContexts)
+	{
+		const DrawArgs& drawArg = drawArgs[i];
+
+		commandList->DrawIndexedInstanced(
+			drawArg.indexCount,
+			1,
+			drawArg.startIndex,
+			drawArg.baseVertex,
+			drawArg.startInstance
+		);
+	}
+}
+
+void SetInstanceCB(CommonRenderPassArgs& args, const RenderInstance& renderInstance, ComPtr<ID3D12GraphicsCommandList> commandList)
+{
+	auto instanceCBVHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
+	instanceCBVHandle.Offset(renderInstance.CBIndex, args.perInstanceCBVDescSize);
+	commandList->SetGraphicsRootDescriptorTable(
+		RootSigRegisters::CBRegisters::CBDescriptorTable,
+		instanceCBVHandle
 	);
 }
 
@@ -76,6 +99,9 @@ void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackag
 	auto commandList = commandLists[context];
 	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
 
+	// Set render target and depth stencil.
+	commandList->OMSetRenderTargets(1, &args.RTV, TRUE, &args.commonArgs.depthStencilView);
+
 	// Draw.
 	for (const RenderPackage& renderPackage : renderPackages)
 	{
@@ -102,7 +128,6 @@ void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackag
 
 void NonIndexedRenderPass::PerRenderObject(const RenderObject& renderObject, void* pipelineSpecificArgs, UINT context)
 {
-	NonIndexedRenderPassArgs args = ToSpecificArgs<NonIndexedRenderPassArgs>(pipelineSpecificArgs);
 	auto commandList = commandLists[context];
 
 	commandList->IASetPrimitiveTopology(renderObject.topology);
@@ -114,12 +139,7 @@ void NonIndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstanc
 	NonIndexedRenderPassArgs args = ToSpecificArgs<NonIndexedRenderPassArgs>(pipelineSpecificArgs);
 	auto commandList = commandLists[context];
 
-	auto instanceCBVHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-	instanceCBVHandle.Offset(renderInstance.CBIndex, args.commonArgs.perInstanceCBVDescSize);
-	commandList->SetGraphicsRootDescriptorTable(
-		RootSigRegisters::CBRegisters::CBDescriptorTable,
-		instanceCBVHandle
-	);
+	SetInstanceCB(args.commonArgs, renderInstance, commandList);
 
 	for (UINT i = context; i < drawArgs.size(); i += NumContexts)
 	{
@@ -142,6 +162,9 @@ void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages,
 
 	auto commandList = commandLists[context];
 	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
+
+	// Set render target and depth stencil.
+	commandList->OMSetRenderTargets(1, &args.RTV, TRUE, &args.commonArgs.depthStencilView);
 
 	// Draw.
 	for (const RenderPackage& renderPackage : renderPackages)
@@ -169,7 +192,6 @@ void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages,
 
 void IndexedRenderPass::PerRenderObject(const RenderObject& renderObject, void* pipelineSpecificArgs, UINT context)
 {
-	IndexedRenderPassArgs args = ToSpecificArgs<IndexedRenderPassArgs>(pipelineSpecificArgs);
 	auto commandList = commandLists[context];
 
 	commandList->IASetPrimitiveTopology(renderObject.topology);
@@ -182,38 +204,65 @@ void IndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, 
 	IndexedRenderPassArgs args = ToSpecificArgs<IndexedRenderPassArgs>(pipelineSpecificArgs);
 	auto commandList = commandLists[context];
 
-	auto instanceCBVHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-	instanceCBVHandle.Offset(renderInstance.CBIndex, args.commonArgs.perInstanceCBVDescSize);
-	commandList->SetGraphicsRootDescriptorTable(
-		RootSigRegisters::CBRegisters::CBDescriptorTable,
-		instanceCBVHandle
-	);
+	SetInstanceCB(args.commonArgs, renderInstance, commandList);
 
-	for (UINT i = context; i < drawArgs.size(); i += NumContexts)
+	DrawInstanceIndexed(context, drawArgs, commandList);
+}
+
+void GBufferRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, void* pipelineSpecificArgs)
+{
+	// TODO: Handle this error better.
+	assert(pipelineSpecificArgs != nullptr);
+	GBufferRenderPassArgs& args = *reinterpret_cast<GBufferRenderPassArgs*>(pipelineSpecificArgs);
+
+	auto commandList = commandLists[context];
+	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
+
+	// Set render targets and depth stencil. The RTVs are assumed to be contiguous in memory, 
+	// which is why the handle to the first GBuffer RTV is required.
+	commandList->OMSetRenderTargets(GBufferCount, &args.firstGBufferRTVHandle, TRUE, &args.commonArgs.depthStencilView);
+
+	// Draw.
+	for (const RenderPackage& renderPackage : renderPackages)
 	{
-		const DrawArgs& drawArg = drawArgs[i];
+		if (renderPackage.renderObject)
+		{
+			const RenderObject& renderObject = *renderPackage.renderObject;
 
-		commandList->DrawIndexedInstanced(
-			drawArg.indexCount,
-			1,
-			drawArg.startIndex,
-			drawArg.baseVertex,
-			drawArg.startInstance
-		);
+			PerRenderObject(renderObject, pipelineSpecificArgs, context);
+
+			const std::vector<DrawArgs>& drawArgs = renderObject.drawArgs;
+
+			if (renderPackage.renderInstances)
+			{
+				const std::vector<RenderInstance>& renderInstances = *renderPackage.renderInstances;
+
+				for (const RenderInstance& renderInstance : renderInstances)
+				{
+					PerRenderInstance(renderInstance, drawArgs, pipelineSpecificArgs, context);
+				}
+			}
+		}
 	}
 }
 
-void DeferredRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, void* pipelineSpecificArgs)
+void GBufferRenderPass::PerRenderObject(const RenderObject& renderObject, void* pipelineSpecificArgs, UINT context)
 {
+	auto commandList = commandLists[context];
 
+	commandList->IASetPrimitiveTopology(renderObject.topology);
+	commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
+	commandList->IASetIndexBuffer(&renderObject.indexBufferView);
 }
 
-void DeferredRenderPass::PerRenderObject(const RenderObject& renderObject, void* pipelineSpecificArgs, UINT context)
+void GBufferRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, void* pipelineSpecificArgs, UINT context)
 {
+	GBufferRenderPassArgs args = ToSpecificArgs<GBufferRenderPassArgs>(pipelineSpecificArgs);
+	auto commandList = commandLists[context];
 
+	SetInstanceCB(args.commonArgs, renderInstance, commandList);
+
+	DrawInstanceIndexed(context, drawArgs, commandList);
 }
 
-void DeferredRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, void* pipelineSpecificArgs, UINT context)
-{
 
-}

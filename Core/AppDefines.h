@@ -13,14 +13,28 @@ constexpr const char* AssetsPath = "../../../../assets/";
 // The number of contexts that the program uses.
 constexpr uint32_t NumContexts = 1u;
 
+// How many back sbuffers the program uses.
+constexpr UINT BufferCount = 2;
+constexpr FLOAT OptimizedClearColor[4] = { 0.0f, 1.0f, 1.0f, 1.0f };
+
 // A unique identifier for each type of render pass.
 enum RenderPassType : uint32_t
 {
 	NonIndexedPass = 0u,
 	IndexedPass,
-	DeferredPass,
+	GBufferPass,
 
 	NumRenderPasses // Keep this last!
+};
+
+// A unique identifier for each type of GBuffer.
+enum GBufferID : UINT
+{
+	GBufferDiffuse = 0,
+	GBufferNormal,
+	GBufferWorldPos,
+
+	GBufferCount // Keep last!
 };
 
 // The maximum number of instances that can be rendered in a single draw call.

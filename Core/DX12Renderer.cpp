@@ -112,12 +112,22 @@ void DX12Renderer::Render()
 		// Reset pre command list.
 		m_directCommandQueue.ResetCommandList(mainThreadCommandListPre);
 
-		// Clear render target.
+		// Clear back buffer and prime for rendering.
 		{
 			backBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
 
 			float clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
 			mainThreadCommandListPre->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
+		}
+
+		// Clear g buffers and prime for rendering to.
+		{
+			ClearGBuffers(mainThreadCommandListPre);
+
+			//for (GPUResource& gBuffer : m_gBuffers)
+			//{
+			//	gBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
+			//}
 		}
 
 		// Clear depth buffer.
@@ -137,7 +147,7 @@ void DX12Renderer::Render()
 		commandLists.push_back(mainThreadCommandListPre);
 	}
 
-	std::vector<RenderPassType> renderPassOrder = { IndexedPass, NonIndexedPass };
+	std::vector<RenderPassType> renderPassOrder = { IndexedPass, NonIndexedPass, GBufferPass };
 
 	// Initialize all render passes.
 	for (auto& renderPass : renderPassOrder)
@@ -167,7 +177,6 @@ void DX12Renderer::Render()
 
 			// Common args for all passes.
 			CommonRenderPassArgs commonArgs = {
-				rtv,
 				dsv,
 				m_rootSignature,
 				m_viewport,
@@ -195,38 +204,59 @@ void DX12Renderer::Render()
 				renderPackages.push_back(std::move(renderPackage));
 			}
 
-			if (renderPassType == NonIndexedPass)
+			// Only try to render if there actually is anything to render.
+			if (renderPackages.size() > 0)
 			{
-				NonIndexedRenderPass& nonIndexedRenderPass = static_cast<NonIndexedRenderPass&>(pass);
-				NonIndexedRenderPass::NonIndexedRenderPassArgs args;
+				if (renderPassType == NonIndexedPass)
+				{
+					NonIndexedRenderPass& nonIndexedRenderPass = static_cast<NonIndexedRenderPass&>(pass);
+					NonIndexedRenderPass::NonIndexedRenderPassArgs args;
 
-				// Add state args.
-				args.commonArgs = commonArgs;
+					// Add state args.
+					args.commonArgs = commonArgs;
+					args.RTV = rtv;
 
-				// Render all render packages.
-				nonIndexedRenderPass.Render(renderPackages, context, &args);
-				
-				// Signal that pass is done.
-				m_syncHandler.SetPass(context, renderPassType);
-			}
-			else if (renderPassType == IndexedPass)
-			{
-				IndexedRenderPass& indexedRenderPass = static_cast<IndexedRenderPass&>(pass);
-				IndexedRenderPass::IndexedRenderPassArgs args;
-				
-				// Add state args.
-				args.commonArgs = commonArgs;
-				
-				indexedRenderPass.Render(renderPackages, context, &args);
-				
-				// Signal that pass is done.
-				m_syncHandler.SetPass(context, renderPassType);
-			}
-			else
-			{
-				throw std::runtime_error("Unknown render pass type.");
+					// Render all render packages.
+					nonIndexedRenderPass.Render(renderPackages, context, &args);
+				}
+				else if (renderPassType == IndexedPass)
+				{
+					IndexedRenderPass& indexedRenderPass = static_cast<IndexedRenderPass&>(pass);
+					IndexedRenderPass::IndexedRenderPassArgs args;
+
+					// Add state args.
+					args.commonArgs = commonArgs;
+					args.RTV = rtv;
+
+					indexedRenderPass.Render(renderPackages, context, &args);
+				}
+				else if (renderPassType == GBufferPass)
+				{
+					GBufferRenderPass& indexedRenderPass = static_cast<GBufferRenderPass&>(pass);
+					GBufferRenderPass::GBufferRenderPassArgs args;
+
+					// Add state args.
+					args.commonArgs = commonArgs;
+
+					// Get RTV handle for the first GBuffer.
+					const CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle(
+						m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
+						RTVOffsetGBuffers,
+						m_rtvDescriptorSize
+					);
+
+					args.firstGBufferRTVHandle = firstGBufferRTVHandle;
+
+					indexedRenderPass.Render(renderPackages, context, &args);
+				}
+				else
+				{
+					throw std::runtime_error("Unknown render pass type.");
+				}
 			}
 
+			// Signal that pass is done.
+			m_syncHandler.SetPass(context, renderPassType);
 			m_renderPasses[renderPassType]->Close(context);
 		}
 
@@ -251,6 +281,11 @@ void DX12Renderer::Render()
 
 	// Prepare for present
 	backBuffer.TransitionTo(D3D12_RESOURCE_STATE_PRESENT, mainThreadCommandListPost);
+
+	//for (GPUResource& gBuffer : m_gBuffers)
+	//{
+	//	gBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPost);
+	//}
 
 	// Close post command list.
 	mainThreadCommandListPost->Close() >> CHK_HR;
@@ -417,13 +452,14 @@ void DX12Renderer::CreateGBuffers()
 {
 	CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
 	DXGI_FORMAT dxgiFormat = DXGI_FORMAT_UNKNOWN;
-	CD3DX12_RESOURCE_DESC resourceProps = CD3DX12_RESOURCE_DESC::Tex2D(
+	CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Tex2D(
 		dxgiFormat,
 		m_width,
 		m_height
 	);
-	resourceProps.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+	resourceDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
+	// TODO: This is ignored for now. Check if it is important.
 	D3D12_CLEAR_VALUE optimizedClearValue = {
 		.Format = dxgiFormat,
 		.Color = { 0.0f, 1.0f, 0.0f, 1.0f }
@@ -432,50 +468,43 @@ void DX12Renderer::CreateGBuffers()
 	// Diffuse gbuffer.
 	{
 		dxgiFormat = GBufferFormats[GBufferDiffuse];
-		resourceProps.Format = dxgiFormat;
+		resourceDesc.Format = dxgiFormat;
 		optimizedClearValue.Format = dxgiFormat;
 
-		m_device->CreateCommittedResource(
-			&heapProps,
-			D3D12_HEAP_FLAG_NONE,
-			&resourceProps,
+		m_gBuffers[GBufferDiffuse] = CreateResource(
+			m_device,
+			resourceDesc, 
 			D3D12_RESOURCE_STATE_RENDER_TARGET,
-			&optimizedClearValue,
-			IID_PPV_ARGS(&m_gBuffers[GBufferDiffuse])
-		) >> CHK_HR;
+			D3D12_HEAP_TYPE_DEFAULT
+		);
 	}
 	
 	// Surface normal gbuffer.
 	{
 		dxgiFormat = GBufferFormats[GBufferNormal];
-		resourceProps.Format = dxgiFormat;
+		resourceDesc.Format = dxgiFormat;
 		optimizedClearValue.Format = dxgiFormat;
 		
-		m_device->CreateCommittedResource(
-			&heapProps,
-			D3D12_HEAP_FLAG_NONE,
-			&resourceProps,
+		m_gBuffers[GBufferNormal] = CreateResource(
+			m_device,
+			resourceDesc,
 			D3D12_RESOURCE_STATE_RENDER_TARGET,
-			&optimizedClearValue,
-			IID_PPV_ARGS(&m_gBuffers[GBufferNormal])
-		) >> CHK_HR;
+			D3D12_HEAP_TYPE_DEFAULT
+		);
 	}
 
 	// World position gbuffer.
 	{
 		dxgiFormat = GBufferFormats[GBufferWorldPos];
-		resourceProps.Format = dxgiFormat;
+		resourceDesc.Format = dxgiFormat;
 		optimizedClearValue.Format = dxgiFormat;
 
-		m_device->CreateCommittedResource(
-			&heapProps,
-			D3D12_HEAP_FLAG_NONE,
-			&resourceProps,
+		m_gBuffers[GBufferWorldPos] = CreateResource(
+			m_device,
+			resourceDesc,
 			D3D12_RESOURCE_STATE_RENDER_TARGET,
-			&optimizedClearValue,
-			IID_PPV_ARGS(&m_gBuffers[GBufferWorldPos])
-		) >> CHK_HR;
-
+			D3D12_HEAP_TYPE_DEFAULT
+		);
 	}
 }
 
@@ -724,6 +753,7 @@ void DX12Renderer::CreatePSOs()
 		CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimtiveTopology;
 		CD3DX12_PIPELINE_STATE_STREAM_VS VS;
 		CD3DX12_PIPELINE_STATE_STREAM_PS PS;
+		CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL DepthStencil;
 		CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
 		CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
 	} pipelineStateStream;
@@ -753,6 +783,12 @@ void DX12Renderer::CreatePSOs()
 		pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
 		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
+		// TODO: REMOVE LATER! THIS IS ONLY FOR TEMPORARY TESTING WITH GBUFFERS.
+		{
+			CD3DX12_DEPTH_STENCIL_DESC DepthStencilDesc = CD3DX12_DEPTH_STENCIL_DESC(CD3DX12_DEFAULT());
+			DepthStencilDesc.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+			pipelineStateStream.DepthStencil = DepthStencilDesc;
+		}
 		pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 		pipelineStateStream.RTVFormats = {
 			.RTFormats = { DXGI_FORMAT_R8G8B8A8_UNORM },
@@ -764,8 +800,8 @@ void DX12Renderer::CreatePSOs()
 
 		NAME_D3D12_OBJECT(defaultPipelineState);
 
-		AddRenderPass(NonIndexedPass, defaultPipelineState);
-		AddRenderPass(IndexedPass, defaultPipelineState);
+		RegisterRenderPass(NonIndexedPass, defaultPipelineState);
+		RegisterRenderPass(IndexedPass, defaultPipelineState);
 	}
 	
 
@@ -798,7 +834,7 @@ void DX12Renderer::CreatePSOs()
 
 		NAME_D3D12_OBJECT(deferredPipelineState);
 
-		AddRenderPass(DeferredPass, deferredPipelineState);
+		RegisterRenderPass(GBufferPass, deferredPipelineState);
 	}
 
 }
@@ -841,12 +877,14 @@ void DX12Renderer::CreateRenderObjects()
 
 		m_renderObjectsByID[RenderObjectID::Cube] = CreateRenderObject(&cubeData, &cubeIndices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::Cube);
+		m_renderObjectIDsByRenderPassType[GBufferPass].push_back(RenderObjectID::Cube);
 	}
 
 	// Add obj model.
 	{
 		std::string modelPath = std::string(AssetsPath) + "Koltuk.obj";
 		m_renderObjectsByID[RenderObjectID::OBJModel1] = CreateRenderObjectFromOBJ(modelPath, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		
 		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::OBJModel1);
 	}
 }
@@ -972,21 +1010,22 @@ void DX12Renderer::UpdateInstanceConstantBuffers()
 	m_perInstanceCB.resource->Unmap(0, nullptr);
 }
 
-#define CaseAddRenderPass(renderpasstype, renderclass) \
+// Macro for reducing code duplication in render pass registration.
+#define CaseRegisterRenderPass(renderpasstype, renderclass) \
 case renderpasstype: \
 	m_renderPasses[renderpasstype] = std::make_unique<renderclass>(m_device.Get(), pipelineState); \
 	m_syncHandler.AddUniquePassSync(renderpasstype); \
 	break
 
-void DX12Renderer::AddRenderPass(const RenderPassType renderPassType, ComPtr<ID3D12PipelineState> pipelineState)
+void DX12Renderer::RegisterRenderPass(const RenderPassType renderPassType, ComPtr<ID3D12PipelineState> pipelineState)
 {
 	switch (renderPassType)
 	{
-		CaseAddRenderPass(DeferredPass, DeferredRenderPass);
+		CaseRegisterRenderPass(GBufferPass, GBufferRenderPass);
 
-		CaseAddRenderPass(NonIndexedPass, NonIndexedRenderPass);
+		CaseRegisterRenderPass(NonIndexedPass, NonIndexedRenderPass);
 
-		CaseAddRenderPass(IndexedPass, IndexedRenderPass);
+		CaseRegisterRenderPass(IndexedPass, IndexedRenderPass);
 
 	default:
 		// TODO: Handle this error better.
@@ -994,6 +1033,21 @@ void DX12Renderer::AddRenderPass(const RenderPassType renderPassType, ComPtr<ID3
 		break;
 	}
 
+}
+
+void DX12Renderer::ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList)
+{
+	for (UINT i = 0; i < GBufferCount; i++)
+	{
+		// Get RTV handle for GBuffer.
+		const CD3DX12_CPU_DESCRIPTOR_HANDLE gBufferRTVHandle(
+			m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
+			RTVOffsetGBuffers + i,
+			m_rtvDescriptorSize
+		);
+
+		commandList->ClearRenderTargetView(gBufferRTVHandle, OptimizedClearColor, 0, nullptr);
+	}
 }
 
 RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology)
