@@ -1,7 +1,10 @@
 struct VSOut
 {
     float4 pos : SV_POSITION;
+    float4 worldPos : WORLD_POS;
     float4 color : COLOR;
+    float4 normal : NORMAL;
+    float4 worldNormal : WORLD_NORMAL;
 };
 
 struct VSIn
@@ -29,9 +32,15 @@ VSOut main(VSIn input)
     VSOut output = (VSOut) 0;
     
     // TODO: Remove the need to do transpose in shader.
-    matrix mvpMatrix = mul(transpose(transf.transform), transpose(camInfo.viewProjMatrix));
+    matrix transposedTransform = transpose(transf.transform);
+    matrix mvpMatrix = mul(transposedTransform, transpose(camInfo.viewProjMatrix));
+
     output.pos = mul(float4(input.pos, 1.0f), mvpMatrix);
-    output.color = float4(input.normal, 1.0f);
+    output.worldPos = mul(float4(input.pos, 1.0f), transposedTransform);
+    output.color = float4(input.color, 1.0f);
+
+    output.normal = float4(input.normal, 1.0f);
+    output.worldNormal = mul(float4(input.normal, 0.0f), transposedTransform);
 
     return output;
 }

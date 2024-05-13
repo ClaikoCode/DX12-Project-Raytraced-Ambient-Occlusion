@@ -15,7 +15,7 @@ constexpr uint32_t NumContexts = 1u;
 
 // How many back sbuffers the program uses.
 constexpr UINT BufferCount = 2;
-constexpr FLOAT OptimizedClearColor[4] = { 0.0f, 1.0f, 1.0f, 1.0f };
+constexpr FLOAT OptimizedClearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
 // A unique identifier for each type of render pass.
 enum RenderPassType : uint32_t

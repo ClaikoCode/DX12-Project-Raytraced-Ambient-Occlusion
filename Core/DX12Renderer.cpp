@@ -777,7 +777,6 @@ void DX12Renderer::CreatePSOs()
 		ComPtr<ID3DBlob> psBlob;
 		D3DReadFileToBlob(L"../PixelShader.cso", &psBlob) >> CHK_HR;
 
-
 		pipelineStateStream.RootSignature = m_rootSignature.Get();
 		pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
 		pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
@@ -842,20 +841,30 @@ void DX12Renderer::CreatePSOs()
 
 void DX12Renderer::CreateRenderObjects()
 {
+	// Register what render objects are going to be allowed to render on specific pipelines.
 	{
-		std::vector<Vertex> triangleData{ {
+		m_renderObjectIDsByRenderPassType[NonIndexedPass].push_back(RenderObjectID::Triangle);
+
+		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::Cube);
+		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::OBJModel1);
+
+		m_renderObjectIDsByRenderPassType[GBufferPass].push_back(RenderObjectID::Cube);
+		m_renderObjectIDsByRenderPassType[GBufferPass].push_back(RenderObjectID::OBJModel1);
+	}
+	
+	// Create render objects.
+	{
+		std::vector<Vertex> triangleData = { {
 			{ { 0.0f, 0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f } }, // top
 			{ { 0.43f, -0.25f, 0.0f }, { 0.0f, 0.0f, 1.0f } }, // right
 			{ { -0.43f, -0.25f, 0.0f }, { 0.0f, 1.0f, 0.0f } } // left
 		} };
 
-
 		m_renderObjectsByID[RenderObjectID::Triangle] = CreateRenderObject(&triangleData, nullptr, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		m_renderObjectIDsByRenderPassType[NonIndexedPass].push_back(RenderObjectID::Triangle);
 	}
 
 	{
-		std::vector<Vertex> cubeData{ {
+		std::vector<Vertex> cubeData = { {
 			{ { -1.0f, -1.0f, -1.0f }, { 0.0f, 0.0f, 0.0f } }, // 0
 			{ { -1.0f,  1.0f, -1.0f }, { 0.0f, 1.0f, 0.0f } }, // 1
 			{ {  1.0f,  1.0f, -1.0f }, { 1.0f, 1.0f, 0.0f } }, // 2
@@ -864,7 +873,7 @@ void DX12Renderer::CreateRenderObjects()
 			{ { -1.0f,  1.0f,  1.0f }, { 0.0f, 1.0f, 1.0f } }, // 5
 			{ {  1.0f,  1.0f,  1.0f }, { 1.0f, 1.0f, 1.0f } }, // 6
 			{ {  1.0f, -1.0f,  1.0f }, { 1.0f, 0.0f, 1.0f } }  // 7
-			} };
+		} };
 
 		std::vector<uint32_t> cubeIndices = {
 				0, 1, 2, 0, 2, 3, // front face
@@ -876,16 +885,12 @@ void DX12Renderer::CreateRenderObjects()
 		};
 
 		m_renderObjectsByID[RenderObjectID::Cube] = CreateRenderObject(&cubeData, &cubeIndices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::Cube);
-		m_renderObjectIDsByRenderPassType[GBufferPass].push_back(RenderObjectID::Cube);
 	}
 
 	// Add obj model.
 	{
 		std::string modelPath = std::string(AssetsPath) + "Koltuk.obj";
 		m_renderObjectsByID[RenderObjectID::OBJModel1] = CreateRenderObjectFromOBJ(modelPath, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		
-		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::OBJModel1);
 	}
 }
 
