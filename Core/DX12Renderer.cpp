@@ -212,28 +212,20 @@ void DX12Renderer::Render()
 
 				if (renderPassType == NonIndexedPass)
 				{
-					NonIndexedRenderPassArgs args;
-
-					// Add state args.
-					args.commonArgs = commonArgs;
-					args.RTV = rtv;
-
-					renderPassArgs = args;
+					renderPassArgs = NonIndexedRenderPassArgs{
+						.commonArgs = commonArgs,
+						.RTV = rtv
+					};
 				}
 				else if (renderPassType == IndexedPass)
 				{
-					IndexedRenderPassArgs args;
-
-					// Add state args.
-					args.commonArgs = commonArgs;
-					args.RTV = rtv;
-
-					renderPassArgs = args;
+					renderPassArgs = IndexedRenderPassArgs{
+						.commonArgs = commonArgs,
+						.RTV = rtv
+					};
 				}
 				else if (renderPassType == DeferredGBufferPass)
 				{
-					DeferredGBufferRenderPassArgs args;
-
 					// Get RTV handle for the first GBuffer.
 					const CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle(
 						m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
@@ -241,11 +233,10 @@ void DX12Renderer::Render()
 						m_rtvDescriptorSize
 					);
 
-					// Add state args.
-					args.commonArgs = commonArgs;
-					args.firstGBufferRTVHandle = firstGBufferRTVHandle;
-
-					renderPassArgs = std::move(args);
+					renderPassArgs = DeferredGBufferRenderPassArgs {
+						.commonArgs = commonArgs,
+						.firstGBufferRTVHandle = firstGBufferRTVHandle
+					};
 				}
 				else if(renderPassType == DeferredLightingPass)
 				{

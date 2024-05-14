@@ -44,8 +44,10 @@ struct DeferredLightingRenderPassArgs
 	int a;
 };
 
-typedef std::variant<
+using RenderPassArgsVariant = std::variant
+<
 	NonIndexedRenderPassArgs, 
 	IndexedRenderPassArgs, 
 	DeferredGBufferRenderPassArgs, 
-	DeferredLightingRenderPassArgs> RenderPassArgsVariant;
+	DeferredLightingRenderPassArgs
+>;
