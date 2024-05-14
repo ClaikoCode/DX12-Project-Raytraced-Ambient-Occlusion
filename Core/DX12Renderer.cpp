@@ -208,33 +208,31 @@ void DX12Renderer::Render()
 			// Only try to render if there actually is anything to render.
 			if (renderPackages.size() > 0)
 			{
+				RenderPassArgsVariant renderPassArgs;
+
 				if (renderPassType == NonIndexedPass)
 				{
-					NonIndexedRenderPass::NonIndexedRenderPassArgs args;
+					NonIndexedRenderPassArgs args;
 
 					// Add state args.
 					args.commonArgs = commonArgs;
 					args.RTV = rtv;
 
-					// Render all render packages.
-					renderPass.Render(renderPackages, context, &args);
+					renderPassArgs = args;
 				}
 				else if (renderPassType == IndexedPass)
 				{
-					IndexedRenderPass::IndexedRenderPassArgs args;
+					IndexedRenderPassArgs args;
 
 					// Add state args.
 					args.commonArgs = commonArgs;
 					args.RTV = rtv;
 
-					renderPass.Render(renderPackages, context, &args);
+					renderPassArgs = args;
 				}
 				else if (renderPassType == DeferredGBufferPass)
 				{
-					DeferredGBufferRenderPass::GBufferRenderPassArgs args;
-
-					// Add state args.
-					args.commonArgs = commonArgs;
+					DeferredGBufferRenderPassArgs args;
 
 					// Get RTV handle for the first GBuffer.
 					const CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle(
@@ -243,18 +241,24 @@ void DX12Renderer::Render()
 						m_rtvDescriptorSize
 					);
 
+					// Add state args.
+					args.commonArgs = commonArgs;
 					args.firstGBufferRTVHandle = firstGBufferRTVHandle;
 
-					renderPass.Render(renderPackages, context, &args);
+					renderPassArgs = std::move(args);
 				}
 				else if(renderPassType == DeferredLightingPass)
 				{
-					renderPass.Render(renderPackages, context, nullptr);
+					
 				}
 				else
 				{
 					throw std::runtime_error("Unknown render pass type.");
 				}
+
+
+				// Render all render packages.
+				renderPass.Render(renderPackages, context, &renderPassArgs);
 			}
 
 			// Signal that pass is done.
