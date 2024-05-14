@@ -100,7 +100,7 @@ public:
 	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, void* pipelineSpecificArgs, UINT context) override final;
 };
 
-class GBufferRenderPass : public DX12RenderPass
+class DeferredGBufferRenderPass : public DX12RenderPass
 {
 public:
 	struct GBufferRenderPassArgs
@@ -110,7 +110,25 @@ public:
 		CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle;
 	};
 
-	GBufferRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
+	DeferredGBufferRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
+		: DX12RenderPass(device, pipelineState) {}
+
+	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, void* pipelineSpecificArgs) override final;
+	void PerRenderObject(const RenderObject& renderObject, void* pipelineSpecificArgs, UINT context) override final;
+	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, void* pipelineSpecificArgs, UINT context) override final;
+};
+
+class DeferredLightingRenderPass : public DX12RenderPass
+{
+public:
+	struct GBufferLightingPassArgs
+	{
+		CommonRenderPassArgs commonArgs;
+
+		CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle;
+	};
+
+	DeferredLightingRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
 		: DX12RenderPass(device, pipelineState) {}
 
 	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, void* pipelineSpecificArgs) override final;

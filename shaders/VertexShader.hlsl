@@ -39,8 +39,8 @@ VSOut main(VSIn input)
     output.worldPos = mul(float4(input.pos, 1.0f), transposedTransform);
     output.color = float4(input.color, 1.0f);
 
-    output.normal = float4(input.normal, 1.0f);
-    output.worldNormal = mul(float4(input.normal, 0.0f), transposedTransform);
+    output.normal = float4(input.normal, 0.0f);
+    output.worldNormal = mul(float4(normalize(input.normal), 0.0f), transposedTransform);
 
     return output;
 }

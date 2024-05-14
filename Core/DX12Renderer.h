@@ -92,6 +92,7 @@ private:
 	void CreateConstantBuffers();
 	void CreateCBVSRVUAVHeap();
 	void CreateCBV();
+	void CreateSRV();
 
 	void InitAssets();
 	void CreateRootSignatures();

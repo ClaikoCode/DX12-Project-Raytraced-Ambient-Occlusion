@@ -22,7 +22,8 @@ enum RenderPassType : uint32_t
 {
 	NonIndexedPass = 0u,
 	IndexedPass,
-	GBufferPass,
+	DeferredGBufferPass,
+	DeferredLightingPass,
 
 	NumRenderPasses // Keep this last!
 };
@@ -41,11 +42,12 @@ enum GBufferID : UINT
 constexpr uint32_t MaxRenderInstances = 32u;
 
 // This should be a sum of all the descriptors for this type of descriptor.
-constexpr uint32_t NumCBVSRVUAVDescriptors = MaxRenderInstances;
+constexpr uint32_t NumCBVSRVUAVDescriptors = MaxRenderInstances + GBufferCount;
 
 
 enum CBVSRVUAVOffsets : UINT {
-	RenderInstanceOffset = 0
+	CBVOffsetRenderInstance = 0,
+	SRVOffsetGBuffers = MaxRenderInstances
 };
 
 struct InstanceConstants
@@ -62,9 +64,13 @@ enum class RenderObjectID : uint32_t
 
 namespace RootSigRegisters {
 
-	enum CBRegisters : uint32_t {
-		MatrixConstants = 0,
-		CBDescriptorTable
+	enum CBVRegisters : uint32_t {
+		CBMatrixConstants = 0,
+		CBDescriptorTable = 1,
+	};
+
+	enum SRVRegisters : uint32_t {
+		SRDescriptorTable = 0
 	};
 
 }

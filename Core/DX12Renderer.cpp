@@ -147,7 +147,8 @@ void DX12Renderer::Render()
 		commandLists.push_back(mainThreadCommandListPre);
 	}
 
-	std::vector<RenderPassType> renderPassOrder = { IndexedPass, NonIndexedPass, GBufferPass };
+	//std::vector<RenderPassType> renderPassOrder = { IndexedPass, NonIndexedPass, GBufferPass };
+	std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass };
 
 	// Initialize all render passes.
 	for (auto& renderPass : renderPassOrder)
@@ -173,7 +174,7 @@ void DX12Renderer::Render()
 
 		for (RenderPassType renderPassType : renderPassOrder)
 		{
-			DX12RenderPass& pass = *m_renderPasses[renderPassType];
+			DX12RenderPass& renderPass = *m_renderPasses[renderPassType];
 
 			// Common args for all passes.
 			CommonRenderPassArgs commonArgs = {
@@ -209,7 +210,6 @@ void DX12Renderer::Render()
 			{
 				if (renderPassType == NonIndexedPass)
 				{
-					NonIndexedRenderPass& nonIndexedRenderPass = static_cast<NonIndexedRenderPass&>(pass);
 					NonIndexedRenderPass::NonIndexedRenderPassArgs args;
 
 					// Add state args.
@@ -217,23 +217,21 @@ void DX12Renderer::Render()
 					args.RTV = rtv;
 
 					// Render all render packages.
-					nonIndexedRenderPass.Render(renderPackages, context, &args);
+					renderPass.Render(renderPackages, context, &args);
 				}
 				else if (renderPassType == IndexedPass)
 				{
-					IndexedRenderPass& indexedRenderPass = static_cast<IndexedRenderPass&>(pass);
 					IndexedRenderPass::IndexedRenderPassArgs args;
 
 					// Add state args.
 					args.commonArgs = commonArgs;
 					args.RTV = rtv;
 
-					indexedRenderPass.Render(renderPackages, context, &args);
+					renderPass.Render(renderPackages, context, &args);
 				}
-				else if (renderPassType == GBufferPass)
+				else if (renderPassType == DeferredGBufferPass)
 				{
-					GBufferRenderPass& indexedRenderPass = static_cast<GBufferRenderPass&>(pass);
-					GBufferRenderPass::GBufferRenderPassArgs args;
+					DeferredGBufferRenderPass::GBufferRenderPassArgs args;
 
 					// Add state args.
 					args.commonArgs = commonArgs;
@@ -247,7 +245,11 @@ void DX12Renderer::Render()
 
 					args.firstGBufferRTVHandle = firstGBufferRTVHandle;
 
-					indexedRenderPass.Render(renderPackages, context, &args);
+					renderPass.Render(renderPackages, context, &args);
+				}
+				else if(renderPassType == DeferredLightingPass)
+				{
+					renderPass.Render(renderPackages, context, nullptr);
 				}
 				else
 				{
@@ -346,6 +348,7 @@ void DX12Renderer::InitPipeline()
 	CreateConstantBuffers();
 	CreateCBVSRVUAVHeap();
 	CreateCBV();
+	CreateSRV();
 }
 
 void DX12Renderer::CreateDeviceAndSwapChain()
@@ -654,7 +657,7 @@ void DX12Renderer::CreateCBV()
 	constexpr UINT instanceDataSize = DX12Abstractions::CalculateConstantBufferByteSize(sizeof(InstanceConstants));
 
 	// Create all CBV descriptors for render instances.
-	for (UINT i = CBVSRVUAVOffsets::RenderInstanceOffset; i < MaxRenderInstances; i++)
+	for (UINT i = CBVSRVUAVOffsets::CBVOffsetRenderInstance; i < MaxRenderInstances; i++)
 	{
 		D3D12_GPU_VIRTUAL_ADDRESS instanceCBAddress = m_perInstanceCB.resource->GetGPUVirtualAddress();
 		// Set the offset for the data location inside the upload buffer.
@@ -671,6 +674,31 @@ void DX12Renderer::CreateCBV()
 		instanceCBVHandle.Offset(i, m_cbvSrvUavDescriptorSize);
 
 		m_device->CreateConstantBufferView(&cbvDesc, instanceCBVHandle);
+	} 
+}
+
+void DX12Renderer::CreateSRV()
+{
+	// SRVs for gbuffers.
+	for (UINT i = 0; i < GBufferCount; i++)
+	{
+		UINT SRVIndex = i + CBVSRVUAVOffsets::SRVOffsetGBuffers;
+
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
+		srvDesc.Format = GBufferFormats[i];
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srvDesc.Texture2D = {
+			.MostDetailedMip = 0,
+			.MipLevels = -1u,
+			.PlaneSlice = 0,
+			.ResourceMinLODClamp = 0.0f
+		};
+		
+		CD3DX12_CPU_DESCRIPTOR_HANDLE gbufferSRVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
+		gbufferSRVHandle.Offset(SRVIndex, m_cbvSrvUavDescriptorSize);
+
+		m_device->CreateShaderResourceView(m_gBuffers[i].Get(), &srvDesc, gbufferSRVHandle);
 	}
 }
 
@@ -685,19 +713,27 @@ void DX12Renderer::InitAssets()
 
 void DX12Renderer::CreateRootSignatures()
 {
-	CD3DX12_DESCRIPTOR_RANGE cbvTable;
-	cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, RootSigRegisters::CBRegisters::CBDescriptorTable);
+	std::array<CD3DX12_ROOT_PARAMETER, 3> rootParameters = {};
+	// Root parameter setup.
+	{
+		// Add a matrix to the root signature where each element is stored as a constant.
+		rootParameters[0].InitAsConstants(
+			sizeof(dx::XMMATRIX) / 4,
+			RootSigRegisters::CBVRegisters::CBMatrixConstants,
+			0,
+			D3D12_SHADER_VISIBILITY_VERTEX
+		);
 
-	std::array<CD3DX12_ROOT_PARAMETER, 2> rootParameters = {};
-	// Add a matrix to the root signature where each element is stored as a constant.
-	rootParameters[0].InitAsConstants(
-		sizeof(dx::XMMATRIX) / 4, 
-		RootSigRegisters::CBRegisters::MatrixConstants,
-		0, 
-		D3D12_SHADER_VISIBILITY_VERTEX
-	);
-	// Add descriptor table for instance specific constants.
-	rootParameters[1].InitAsDescriptorTable(1, &cbvTable, D3D12_SHADER_VISIBILITY_ALL);
+		// Add descriptor table for instance specific constants.
+		CD3DX12_DESCRIPTOR_RANGE cbvTable;
+		cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, RootSigRegisters::CBVRegisters::CBDescriptorTable);
+		rootParameters[1].InitAsDescriptorTable(1, &cbvTable, D3D12_SHADER_VISIBILITY_ALL);
+
+		// Add descriptor table for shader resources.
+		CD3DX12_DESCRIPTOR_RANGE srvTable;
+		srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, GBufferCount, RootSigRegisters::SRVRegisters::SRDescriptorTable);
+		rootParameters[2].InitAsDescriptorTable(1, &srvTable, D3D12_SHADER_VISIBILITY_PIXEL);
+	}
 
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
 	rootSignatureDesc.Init(
@@ -804,8 +840,14 @@ void DX12Renderer::CreatePSOs()
 	}
 	
 
-	// Deferred pass settings.
+	// Deferred render gbuffer pass settings.
 	{
+		ComPtr<ID3DBlob> vsBlob;
+		D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
+
+		ComPtr<ID3DBlob> psBlob;
+		D3DReadFileToBlob(L"../DeferredPixelShader.cso", &psBlob) >> CHK_HR;
+
 		D3D12_RT_FORMAT_ARRAY formatArr;
 		memset(&formatArr, 0, sizeof(formatArr)); // Initialize memory with 0.
 
@@ -819,21 +861,52 @@ void DX12Renderer::CreatePSOs()
 		// Set the correct array of RTV formats expected.
 		pipelineStateStream.RTVFormats = formatArr;
 
-		ComPtr<ID3DBlob> vsBlob;
-		D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
-		
-		ComPtr<ID3DBlob> psBlob;
-		D3DReadFileToBlob(L"../DeferredPixelShader.cso", &psBlob) >> CHK_HR;
-		
 		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
 		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
 
-		ComPtr<ID3D12PipelineState> deferredPipelineState;
-		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&deferredPipelineState)) >> CHK_HR;
+		ComPtr<ID3D12PipelineState> deferredGBufferPipelineState;
+		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&deferredGBufferPipelineState)) >> CHK_HR;
 
-		NAME_D3D12_OBJECT(deferredPipelineState);
+		NAME_D3D12_OBJECT(deferredGBufferPipelineState);
 
-		RegisterRenderPass(GBufferPass, deferredPipelineState);
+		RegisterRenderPass(DeferredGBufferPass, deferredGBufferPipelineState);
+	}
+
+	// Deferred render lighting pass settings.
+	{
+		ComPtr<ID3DBlob> vsBlob;
+		D3DReadFileToBlob(L"../FSQVS.cso", &vsBlob) >> CHK_HR;
+
+		ComPtr<ID3DBlob> psBlob;
+		D3DReadFileToBlob(L"../DeferredLightingPS.cso", &psBlob) >> CHK_HR;
+
+		const D3D12_INPUT_ELEMENT_DESC inputLayoutSpecial[] = {
+			{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		};
+
+		struct PipelineStateStreamSpecial
+		{
+			CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE RootSignature;
+			CD3DX12_PIPELINE_STATE_STREAM_INPUT_LAYOUT InputLayout;
+			CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimtiveTopology;
+			CD3DX12_PIPELINE_STATE_STREAM_VS VS;
+			CD3DX12_PIPELINE_STATE_STREAM_PS PS;
+			CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
+		} pipelineStateStreamSpecial;
+
+		pipelineStateStreamSpecial.RootSignature = m_rootSignature.Get();
+		pipelineStateStreamSpecial.InputLayout = { inputLayoutSpecial, (UINT)std::size(inputLayoutSpecial) };
+		pipelineStateStreamSpecial.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
+		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
+		pipelineStateStream.RTVFormats = { { DXGI_FORMAT_R8G8B8A8_UNORM }, 1 };
+
+		ComPtr<ID3D12PipelineState> deferredLightingPipelineState;
+		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&deferredLightingPipelineState)) >> CHK_HR;
+
+		NAME_D3D12_OBJECT_FUNC(deferredLightingPipelineState, CreatePSOs);
+
+		RegisterRenderPass(DeferredLightingPass, deferredLightingPipelineState);
 	}
 
 }
@@ -848,8 +921,8 @@ void DX12Renderer::CreateRenderObjects()
 		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::Cube);
 		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::OBJModel1);
 
-		m_renderObjectIDsByRenderPassType[GBufferPass].push_back(RenderObjectID::Cube);
-		m_renderObjectIDsByRenderPassType[GBufferPass].push_back(RenderObjectID::OBJModel1);
+		//m_renderObjectIDsByRenderPassType[GBufferPass].push_back(RenderObjectID::Cube);
+		m_renderObjectIDsByRenderPassType[DeferredGBufferPass].push_back(RenderObjectID::OBJModel1);
 	}
 	
 	// Create render objects.
@@ -889,7 +962,7 @@ void DX12Renderer::CreateRenderObjects()
 
 	// Add obj model.
 	{
-		std::string modelPath = std::string(AssetsPath) + "Koltuk.obj";
+		std::string modelPath = std::string(AssetsPath) + "Sphere.obj";
 		m_renderObjectsByID[RenderObjectID::OBJModel1] = CreateRenderObjectFromOBJ(modelPath, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	}
 }
@@ -957,7 +1030,7 @@ void DX12Renderer::CreateRenderInstances()
 		renderInstances.push_back(renderInstance);
 
 		renderInstance.CBIndex = renderInstanceCount++;
-		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(6.0f, 3.0f, 0.0f));
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixRotationX(dx::XM_PIDIV2 * 0.34f) * dx::XMMatrixTranslation(6.0f, 3.0f, 0.0f));
 		renderInstances.push_back(renderInstance);
 
 		renderInstance.CBIndex = renderInstanceCount++;
@@ -972,23 +1045,7 @@ void DX12Renderer::CreateRenderInstances()
 		RenderInstance renderInstance = {};
 
 		renderInstance.CBIndex = renderInstanceCount++;
-		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(3.0f, -3.0f, 0.0f));
-		renderInstances.push_back(renderInstance);
-
-		renderInstance.CBIndex = renderInstanceCount++;
-		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-3.0f, -3.0f, 0.0f));
-		renderInstances.push_back(renderInstance);
-
-		renderInstance.CBIndex = renderInstanceCount++;
-		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-6.0f, -3.0f, 0.0f));
-		renderInstances.push_back(renderInstance);
-
-		renderInstance.CBIndex = renderInstanceCount++;
-		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(6.0f, -3.0f, 0.0f));
-		renderInstances.push_back(renderInstance);
-
-		renderInstance.CBIndex = renderInstanceCount++;
-		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(0.0f, -3.0f, 0.0f));
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixRotationX(dx::XM_PIDIV2 * 0.34f) * dx::XMMatrixTranslation(0.0f, 0.0f, 0.0f));
 		renderInstances.push_back(renderInstance);
 	}
 }
@@ -1026,11 +1083,13 @@ void DX12Renderer::RegisterRenderPass(const RenderPassType renderPassType, ComPt
 {
 	switch (renderPassType)
 	{
-		CaseRegisterRenderPass(GBufferPass, GBufferRenderPass);
+		CaseRegisterRenderPass(DeferredGBufferPass, DeferredGBufferRenderPass);
 
 		CaseRegisterRenderPass(NonIndexedPass, NonIndexedRenderPass);
 
 		CaseRegisterRenderPass(IndexedPass, IndexedRenderPass);
+
+		CaseRegisterRenderPass(DeferredLightingPass, DeferredLightingRenderPass);
 
 	default:
 		// TODO: Handle this error better.

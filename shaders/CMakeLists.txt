@@ -3,8 +3,8 @@
 add_custom_target(Shaders)
 
 # Set shader files
-set(HLSL_VERTEX_SHADERS VertexShader.hlsl)
-set(HLSL_PIXEL_SHADERS PixelShader.hlsl DeferredPixelShader.hlsl)
+set(HLSL_VERTEX_SHADERS VertexShader.hlsl FSQVS.hlsl)
+set(HLSL_PIXEL_SHADERS PixelShader.hlsl DeferredPixelShader.hlsl DeferredLightingPS.hlsl)
 
 # Set shader type properties
 set_source_files_properties(${HLSL_VERTEX_SHADERS} PROPERTIES ShaderType "vs")

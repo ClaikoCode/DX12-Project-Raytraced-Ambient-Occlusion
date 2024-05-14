@@ -24,11 +24,11 @@ PSOut main(VSOut input)
     PSOut OUT;
 
     DirectionalLight testLight;
-    testLight.dir = float3(0.0f, -1.0f, -1.0f);
+    testLight.dir = normalize(float3(-1.0f, -1.0f, 0.0f));
 
-    float lightStrength = clamp(dot(input.worldNormal, -testLight.dir), 0.0f, 1.0f);
+    float lightStrength = clamp(dot((float3)input.worldNormal, -testLight.dir), 0.0f, 1.0f);
 
-    OUT.diffuse = input.worldNormal * lightStrength;
+    OUT.diffuse = input.color * lightStrength;
     OUT.normal = input.worldNormal;
     OUT.position = input.worldPos;
 
