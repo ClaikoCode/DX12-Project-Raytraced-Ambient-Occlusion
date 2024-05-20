@@ -86,10 +86,41 @@ void DX12Renderer::Render()
 	std::vector<ComPtr<ID3D12CommandList>> commandLists;
 
 	// Before render pass setup.
-	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPre = m_directCommandQueue.CreateCommandList(m_device);
+	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPre = nullptr;
+	static ComPtr<ID3D12CommandAllocator> mainThreadCommandAllocatorPre = nullptr;
+	if (mainThreadCommandListPre == nullptr)
+	{
+		m_device->CreateCommandList1(
+			0,
+			D3D12_COMMAND_LIST_TYPE_DIRECT,
+			D3D12_COMMAND_LIST_FLAG_NONE,
+			IID_PPV_ARGS(&mainThreadCommandListPre)
+		) >> CHK_HR;
+
+		m_device->CreateCommandAllocator(
+			D3D12_COMMAND_LIST_TYPE_DIRECT,
+			IID_PPV_ARGS(&mainThreadCommandAllocatorPre)
+		) >> CHK_HR;
+	}
+	
 
 	// After render pass setup.
-	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPost = m_directCommandQueue.CreateCommandList(m_device);
+	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPost = nullptr;
+	static ComPtr<ID3D12CommandAllocator> mainThreadCommandAllocatorPost = nullptr;
+	if (mainThreadCommandListPost == nullptr)
+	{
+		m_device->CreateCommandList1(
+			0,
+			D3D12_COMMAND_LIST_TYPE_DIRECT,
+			D3D12_COMMAND_LIST_FLAG_NONE,
+			IID_PPV_ARGS(&mainThreadCommandListPost)
+		) >> CHK_HR;
+
+		m_device->CreateCommandAllocator(
+			D3D12_COMMAND_LIST_TYPE_DIRECT,
+			IID_PPV_ARGS(&mainThreadCommandAllocatorPost)
+		) >> CHK_HR;
+	}
 
 	// Fetch the current back buffer that we want to render to.
 	auto& backBuffer = m_renderTargets[currBackBufferIndex];
@@ -104,30 +135,23 @@ void DX12Renderer::Render()
 	// Get DSV handle.
 	const CD3DX12_CPU_DESCRIPTOR_HANDLE dsv(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
 
-	// Reset command allocator.
-	m_directCommandQueue.ResetAllocator();
+	// Reset command allocators
+	mainThreadCommandAllocatorPre->Reset();
+	mainThreadCommandAllocatorPost->Reset();
+
+	// Reset pre command list.
+	mainThreadCommandListPre->Reset(mainThreadCommandAllocatorPre.Get(), nullptr);
+	// Reset post command list.
+	mainThreadCommandListPost->Reset(mainThreadCommandAllocatorPost.Get(), nullptr);
 	
 	// Pre render pass setup.
 	{
-		// Reset pre command list.
-		m_directCommandQueue.ResetCommandList(mainThreadCommandListPre);
-
 		// Clear back buffer and prime for rendering.
 		{
 			backBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
 
 			float clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
 			mainThreadCommandListPre->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
-		}
-
-		// Clear g buffers and prime for rendering to.
-		{
-			ClearGBuffers(mainThreadCommandListPre);
-
-			//for (GPUResource& gBuffer : m_gBuffers)
-			//{
-			//	gBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
-			//}
 		}
 
 		// Clear depth buffer.
@@ -147,8 +171,8 @@ void DX12Renderer::Render()
 		commandLists.push_back(mainThreadCommandListPre);
 	}
 
-	//std::vector<RenderPassType> renderPassOrder = { IndexedPass, NonIndexedPass, GBufferPass };
-	std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass };
+	//std::vector<RenderPassType> renderPassOrder = { IndexedPass, NonIndexedPass };
+	std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass, DeferredLightingPass };
 
 	// Initialize all render passes.
 	for (auto& renderPass : renderPassOrder)
@@ -166,6 +190,18 @@ void DX12Renderer::Render()
 	m_activeCamera->UpdateViewMatrix();
 	m_activeCamera->UpdateViewProjectionMatrix();
 
+	// Common args for all passes.
+	CommonRenderPassArgs commonArgs = {
+		dsv,
+		m_rootSignature,
+		m_viewport,
+		m_scissorRect,
+		m_cbvSrvUavHeap,
+		m_cbvSrvUavDescriptorSize,
+		t,
+		m_activeCamera->GetViewProjectionMatrix()
+	};
+
 	// This is supposed to be ran by different threads.
 	for (UINT context = 0; context < NumContexts; context++)
 	{
@@ -175,18 +211,6 @@ void DX12Renderer::Render()
 		for (RenderPassType renderPassType : renderPassOrder)
 		{
 			DX12RenderPass& renderPass = *m_renderPasses[renderPassType];
-
-			// Common args for all passes.
-			CommonRenderPassArgs commonArgs = {
-				dsv,
-				m_rootSignature,
-				m_viewport,
-				m_scissorRect,
-				m_cbvSrvUavHeap,
-				m_cbvSrvUavDescriptorSize,
-				t,
-				m_activeCamera->GetViewProjectionMatrix()
-			};
 
 			const std::vector<RenderObjectID>& passObjectIDs = m_renderObjectIDsByRenderPassType[renderPassType];
 
@@ -206,9 +230,10 @@ void DX12Renderer::Render()
 			}
 
 			// Only try to render if there actually is anything to render.
-			if (renderPackages.size() > 0)
+			// Deferred lighting pass does not render any packages and should be allowed to execute without it.
+			if (renderPackages.size() > 0 || renderPassType == DeferredLightingPass)
 			{
-				RenderPassArgsVariant renderPassArgs;
+				RenderPassArgs renderPassArgs;
 
 				if (renderPassType == NonIndexedPass)
 				{
@@ -226,6 +251,18 @@ void DX12Renderer::Render()
 				}
 				else if (renderPassType == DeferredGBufferPass)
 				{
+					if (context == 0)
+					{
+						auto commandList = renderPass.commandLists[context];
+
+						for (GPUResource& gBuffer : m_gBuffers)
+						{
+							gBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, commandList);
+						}
+
+						ClearGBuffers(commandList);
+					}
+
 					// Get RTV handle for the first GBuffer.
 					const CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle(
 						m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
@@ -240,7 +277,20 @@ void DX12Renderer::Render()
 				}
 				else if(renderPassType == DeferredLightingPass)
 				{
-					
+					if (context == 0)
+					{
+						auto commandList = renderPass.commandLists[context];
+
+						for (GPUResource& gBuffer : m_gBuffers)
+						{
+							gBuffer.TransitionTo(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, commandList);
+						}
+					}
+
+					renderPassArgs = DeferredLightingRenderPassArgs {
+						.commonArgs = commonArgs,
+						.RTV = rtv
+					};
 				}
 				else
 				{
@@ -273,16 +323,8 @@ void DX12Renderer::Render()
 		}
 	}
 
-	// Reset post command list with allocator used on command list recently closed.
-	m_directCommandQueue.ResetCommandList(mainThreadCommandListPost);
-
 	// Prepare for present
 	backBuffer.TransitionTo(D3D12_RESOURCE_STATE_PRESENT, mainThreadCommandListPost);
-
-	//for (GPUResource& gBuffer : m_gBuffers)
-	//{
-	//	gBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPost);
-	//}
 
 	// Close post command list.
 	mainThreadCommandListPost->Close() >> CHK_HR;
@@ -293,7 +335,6 @@ void DX12Renderer::Render()
 	// Execute all command lists.
 	{
 		ID3D12CommandList* const* commandListsRaw = commandLists[0].GetAddressOf();
-
 		m_directCommandQueue.commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
 	}
 
@@ -504,6 +545,28 @@ void DX12Renderer::CreateGBuffers()
 			D3D12_HEAP_TYPE_DEFAULT
 		);
 	}
+
+
+	// TODO: THE CODE BELOW DOESNT WORK FOR SOME REASON. Find out how to make the initial state is common.
+
+	//m_directCommandQueue.ResetAllocator();
+	//auto commandList = m_directCommandQueue.CreateCommandList(m_device);
+	//m_directCommandQueue.ResetCommandList(commandList);
+	//
+	//for (GPUResource& gBuffer : m_gBuffers)
+	//{
+	//	gBuffer.TransitionTo(D3D12_RESOURCE_STATE_COMMON, commandList);
+	//}
+	//
+	//commandList->Close();
+	//
+	//// Execute direct commands.
+	//{
+	//	std::array<ID3D12CommandList* const, 1> directCommandLists = { commandList.Get() };
+	//	m_directCommandQueue.commandQueue->ExecuteCommandLists((UINT)directCommandLists.size(), directCommandLists.data());
+	//
+	//	m_directCommandQueue.SignalAndWait(nullptr);
+	//}
 }
 
 void DX12Renderer::CreateRTVHeap()
@@ -730,12 +793,15 @@ void DX12Renderer::CreateRootSignatures()
 		rootParameters[2].InitAsDescriptorTable(1, &srvTable, D3D12_SHADER_VISIBILITY_PIXEL);
 	}
 
+	// Static general sampler for all shaders.
+	CD3DX12_STATIC_SAMPLER_DESC staticSampler(0);
+
+	// Define rootsig description.
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
 	rootSignatureDesc.Init(
 		(UINT)rootParameters.size(),
 		rootParameters.data(),
-		0,
-		nullptr,
+		1, &staticSampler,
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
 	);
 
@@ -887,6 +953,7 @@ void DX12Renderer::CreatePSOs()
 			CD3DX12_PIPELINE_STATE_STREAM_VS VS;
 			CD3DX12_PIPELINE_STATE_STREAM_PS PS;
 			CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
+			CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
 		} pipelineStateStreamSpecial;
 
 		pipelineStateStreamSpecial.RootSignature = m_rootSignature.Get();
@@ -895,6 +962,7 @@ void DX12Renderer::CreatePSOs()
 		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
 		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
 		pipelineStateStream.RTVFormats = { { DXGI_FORMAT_R8G8B8A8_UNORM }, 1 };
+		pipelineStateStream.DSVFormat = DXGI_FORMAT_UNKNOWN;
 
 		ComPtr<ID3D12PipelineState> deferredLightingPipelineState;
 		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&deferredLightingPipelineState)) >> CHK_HR;

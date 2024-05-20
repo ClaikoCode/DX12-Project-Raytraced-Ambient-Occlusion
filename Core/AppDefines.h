@@ -62,6 +62,7 @@ enum class RenderObjectID : uint32_t
 	OBJModel1
 };
 
+// TODO: Split this up into root sig parameter indexes and shader register indexes.
 namespace RootSigRegisters {
 
 	enum CBVRegisters : uint32_t {

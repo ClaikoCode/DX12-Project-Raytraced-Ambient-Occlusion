@@ -45,7 +45,7 @@ void DrawInstanceIndexed(UINT context, const std::vector<DrawArgs>& drawArgs, Co
 void SetInstanceCB(CommonRenderPassArgs& args, const RenderInstance& renderInstance, ComPtr<ID3D12GraphicsCommandList> commandList)
 {
 	auto instanceCBVHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-	instanceCBVHandle.Offset(renderInstance.CBIndex, args.perInstanceCBVDescSize);
+	instanceCBVHandle.Offset(renderInstance.CBIndex, args.cbvSrvUavDescSize);
 	commandList->SetGraphicsRootDescriptorTable(
 		RootSigRegisters::CBVRegisters::CBDescriptorTable,
 		instanceCBVHandle
@@ -89,7 +89,7 @@ void DX12RenderPass::Close(UINT context)
 	commandLists[context]->Close() >> CHK_HR;
 }
 
-void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgsVariant* pipelineArgs)
+void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineArgs)
 {
 	// TODO: Handle this error better.
 	assert(pipelineArgs != nullptr);
@@ -126,7 +126,7 @@ void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackag
 	}
 }
 
-void NonIndexedRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgsVariant* pipelineArgs, UINT context)
+void NonIndexedRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
 {
 	auto commandList = commandLists[context];
 
@@ -134,7 +134,7 @@ void NonIndexedRenderPass::PerRenderObject(const RenderObject& renderObject, Ren
 	commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
 }
 
-void NonIndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgsVariant* pipelineArgs, UINT context)
+void NonIndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
 {
 	NonIndexedRenderPassArgs& args = ToSpecificArgs<NonIndexedRenderPassArgs>(pipelineArgs);
 	auto commandList = commandLists[context];
@@ -154,7 +154,7 @@ void NonIndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstanc
 	}
 }
 
-void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgsVariant* pipelineSpecificArgs)
+void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
 {
 	// TODO: Handle this error better.
 	assert(pipelineSpecificArgs != nullptr);
@@ -190,7 +190,7 @@ void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages,
 	}
 }
 
-void IndexedRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgsVariant* pipelineArgs, UINT context)
+void IndexedRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
 {
 	auto commandList = commandLists[context];
 
@@ -199,7 +199,7 @@ void IndexedRenderPass::PerRenderObject(const RenderObject& renderObject, Render
 	commandList->IASetIndexBuffer(&renderObject.indexBufferView);
 }
 
-void IndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgsVariant* pipelineArgs, UINT context)
+void IndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
 {
 	IndexedRenderPassArgs args = ToSpecificArgs<IndexedRenderPassArgs>(pipelineArgs);
 	auto commandList = commandLists[context];
@@ -209,7 +209,7 @@ void IndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, 
 	DrawInstanceIndexed(context, drawArgs, commandList);
 }
 
-void DeferredGBufferRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgsVariant* pipelineSpecificArgs)
+void DeferredGBufferRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
 {
 	// TODO: Handle this error better.
 	assert(pipelineSpecificArgs != nullptr);
@@ -246,7 +246,7 @@ void DeferredGBufferRenderPass::Render(const std::vector<RenderPackage>& renderP
 	}
 }
 
-void DeferredGBufferRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgsVariant* pipelineArgs, UINT context)
+void DeferredGBufferRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
 {
 	auto commandList = commandLists[context];
 
@@ -255,7 +255,7 @@ void DeferredGBufferRenderPass::PerRenderObject(const RenderObject& renderObject
 	commandList->IASetIndexBuffer(&renderObject.indexBufferView);
 }
 
-void DeferredGBufferRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgsVariant* pipelineArgs, UINT context)
+void DeferredGBufferRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
 {
 	DeferredGBufferRenderPassArgs args = ToSpecificArgs<DeferredGBufferRenderPassArgs>(pipelineArgs);
 	auto commandList = commandLists[context];
@@ -266,17 +266,34 @@ void DeferredGBufferRenderPass::PerRenderInstance(const RenderInstance& renderIn
 }
 
 
-void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgsVariant* pipelineSpecificArgs)
+void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
+{
+	assert(pipelineSpecificArgs != nullptr);
+	DeferredLightingRenderPassArgs args = ToSpecificArgs<DeferredLightingRenderPassArgs>(pipelineSpecificArgs);
+
+	auto commandList = commandLists[context];
+
+	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
+
+	// Set default primitive topology for full screen quad.
+	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	
+	// Set the descriptor table for gbuffer srvs.
+	auto descHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
+	descHeapHandle.Offset(CBVSRVUAVOffsets::SRVOffsetGBuffers, args.commonArgs.cbvSrvUavDescSize);
+	commandList->SetGraphicsRootDescriptorTable(2, descHeapHandle);
+
+	commandList->OMSetRenderTargets(1, &args.RTV, TRUE, nullptr);
+
+	commandList->DrawInstanced(6, 1, 0, 0);
+}
+
+void DeferredLightingRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
 {
 
 }
 
-void DeferredLightingRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgsVariant* pipelineArgs, UINT context)
-{
-
-}
-
-void DeferredLightingRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgsVariant* pipelineArgs, UINT context)
+void DeferredLightingRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
 {
 
 }

@@ -29,7 +29,12 @@ namespace DX12Abstractions
 	}
 
 	void GPUResource::TransitionTo(D3D12_RESOURCE_STATES newState, ComPtr<ID3D12GraphicsCommandList> commandList)
-	{
+	{  
+		// TODO: xThis might be bad for multithreaded app.
+		if (newState == currentState) {
+			return;
+		}
+
 		const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
 			resource.Get(),
 			currentState,

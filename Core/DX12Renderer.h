@@ -53,6 +53,7 @@ public:
 	void Signal();
 	// If nullptr is passed, the function will wait indefinitely.
 	void Wait(HANDLE event);
+	// If nullptr is passed, the function will wait indefinitely.
 	void SignalAndWait(HANDLE event);
 
 private:

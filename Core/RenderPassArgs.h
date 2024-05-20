@@ -11,7 +11,7 @@ struct CommonRenderPassArgs
 	CD3DX12_RECT scissorRect;
 
 	ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeap;
-	UINT perInstanceCBVDescSize;
+	UINT cbvSrvUavDescSize;
 
 	float time;
 
@@ -41,10 +41,12 @@ struct DeferredGBufferRenderPassArgs
 
 struct DeferredLightingRenderPassArgs
 {
-	int a;
+	CommonRenderPassArgs commonArgs;
+
+	CD3DX12_CPU_DESCRIPTOR_HANDLE RTV;
 };
 
-using RenderPassArgsVariant = std::variant
+using RenderPassArgs = std::variant
 <
 	NonIndexedRenderPassArgs, 
 	IndexedRenderPassArgs, 

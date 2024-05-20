@@ -14,21 +14,11 @@ struct PSOut
     float4 position : SV_TARGET2;
 };
 
-struct DirectionalLight
-{
-    float3 dir;
-};
-
 PSOut main(VSOut input)
 {
     PSOut OUT;
 
-    DirectionalLight testLight;
-    testLight.dir = normalize(float3(-1.0f, -1.0f, 0.0f));
-
-    float lightStrength = clamp(dot((float3)input.worldNormal, -testLight.dir), 0.0f, 1.0f);
-
-    OUT.diffuse = input.color * lightStrength;
+    OUT.diffuse = input.color;
     OUT.normal = input.worldNormal;
     OUT.position = input.worldPos;
 
