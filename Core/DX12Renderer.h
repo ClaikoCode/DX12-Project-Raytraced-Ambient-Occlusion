@@ -23,7 +23,7 @@ enum RTVOffsets : UINT
 	RTVOffsetGBuffers = BufferCount
 };
 
-template<typename T> DXGI_FORMAT GetDXGIFormat() { throw std::exception("Unsupported type"); }
+
 
 // TODO: move this to a more appropriate place.
 struct Vertex

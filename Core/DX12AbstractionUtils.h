@@ -50,6 +50,10 @@ namespace DX12Abstractions
 		return (byteSize + 255) & ~255;
 	}
 
+	template<typename T> DXGI_FORMAT GetDXGIFormat() { throw std::exception("Unsupported type"); }
+	template<> inline DXGI_FORMAT GetDXGIFormat<float>() { return DXGI_FORMAT_R32_FLOAT; }
+	template<> inline DXGI_FORMAT GetDXGIFormat<uint32_t>() { return DXGI_FORMAT_R32_UINT; }
+	template<> inline DXGI_FORMAT GetDXGIFormat<uint16_t>() { return DXGI_FORMAT_R16_UINT; }
 }
 
 // Naming helper for ComPtr<T>.

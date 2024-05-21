@@ -3,5 +3,4 @@
 namespace DX12Abstractions
 {
 
-	
 }

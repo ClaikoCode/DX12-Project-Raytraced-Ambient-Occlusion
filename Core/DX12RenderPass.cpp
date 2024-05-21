@@ -19,7 +19,7 @@ void SetCommonStates(CommonRenderPassArgs commonArgs, ComPtr<ID3D12PipelineState
 
 	const auto vpMatrix = commonArgs.viewProjectionMatrix;
 	commandList->SetGraphicsRoot32BitConstants(
-		RootSigRegisters::CBVRegisters::CBMatrixConstants,
+		DefaultRootParameterIdx::MatrixIdx,
 		sizeof(vpMatrix) / sizeof(float),
 		&vpMatrix,
 		0
@@ -44,11 +44,11 @@ void DrawInstanceIndexed(UINT context, const std::vector<DrawArgs>& drawArgs, Co
 
 void SetInstanceCB(CommonRenderPassArgs& args, const RenderInstance& renderInstance, ComPtr<ID3D12GraphicsCommandList> commandList)
 {
-	auto instanceCBVHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-	instanceCBVHandle.Offset(renderInstance.CBIndex, args.cbvSrvUavDescSize);
+	auto cbvHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
+	cbvHeapHandle.Offset(renderInstance.CBIndex, args.cbvSrvUavDescSize);
 	commandList->SetGraphicsRootDescriptorTable(
-		RootSigRegisters::CBVRegisters::CBDescriptorTable,
-		instanceCBVHandle
+		DefaultRootParameterIdx::CBVTableIdx,
+		cbvHeapHandle
 	);
 }
 
@@ -281,7 +281,7 @@ void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& render
 	// Set the descriptor table for gbuffer srvs.
 	auto descHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
 	descHeapHandle.Offset(CBVSRVUAVOffsets::SRVOffsetGBuffers, args.commonArgs.cbvSrvUavDescSize);
-	commandList->SetGraphicsRootDescriptorTable(2, descHeapHandle);
+	commandList->SetGraphicsRootDescriptorTable(DefaultRootParameterIdx::SRVTableIdx, descHeapHandle);
 
 	commandList->OMSetRenderTargets(1, &args.RTV, TRUE, nullptr);
 

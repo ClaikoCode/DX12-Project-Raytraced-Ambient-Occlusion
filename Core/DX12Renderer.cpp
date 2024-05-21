@@ -8,11 +8,6 @@
 #include "AppDefines.h"
 #include "tiny_obj_loader.h"
 
-// TODO: Move this when more cohesive use is found.
-template<> DXGI_FORMAT GetDXGIFormat<float>() { return DXGI_FORMAT_R32_FLOAT; }
-template<> DXGI_FORMAT GetDXGIFormat<uint32_t>() { return DXGI_FORMAT_R32_UINT; }
-template<> DXGI_FORMAT GetDXGIFormat<uint16_t>() { return DXGI_FORMAT_R16_UINT; }
-
 using namespace DX12Abstractions;
 namespace dx = DirectX;
 
@@ -498,17 +493,10 @@ void DX12Renderer::CreateGBuffers()
 	);
 	resourceDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
-	// TODO: This is ignored for now. Check if it is important.
-	D3D12_CLEAR_VALUE optimizedClearValue = {
-		.Format = dxgiFormat,
-		.Color = { 0.0f, 1.0f, 0.0f, 1.0f }
-	};
-
 	// Diffuse gbuffer.
 	{
 		dxgiFormat = GBufferFormats[GBufferDiffuse];
 		resourceDesc.Format = dxgiFormat;
-		optimizedClearValue.Format = dxgiFormat;
 
 		m_gBuffers[GBufferDiffuse] = CreateResource(
 			m_device,
@@ -522,7 +510,6 @@ void DX12Renderer::CreateGBuffers()
 	{
 		dxgiFormat = GBufferFormats[GBufferNormal];
 		resourceDesc.Format = dxgiFormat;
-		optimizedClearValue.Format = dxgiFormat;
 		
 		m_gBuffers[GBufferNormal] = CreateResource(
 			m_device,
@@ -536,7 +523,6 @@ void DX12Renderer::CreateGBuffers()
 	{
 		dxgiFormat = GBufferFormats[GBufferWorldPos];
 		resourceDesc.Format = dxgiFormat;
-		optimizedClearValue.Format = dxgiFormat;
 
 		m_gBuffers[GBufferWorldPos] = CreateResource(
 			m_device,
@@ -545,28 +531,6 @@ void DX12Renderer::CreateGBuffers()
 			D3D12_HEAP_TYPE_DEFAULT
 		);
 	}
-
-
-	// TODO: THE CODE BELOW DOESNT WORK FOR SOME REASON. Find out how to make the initial state is common.
-
-	//m_directCommandQueue.ResetAllocator();
-	//auto commandList = m_directCommandQueue.CreateCommandList(m_device);
-	//m_directCommandQueue.ResetCommandList(commandList);
-	//
-	//for (GPUResource& gBuffer : m_gBuffers)
-	//{
-	//	gBuffer.TransitionTo(D3D12_RESOURCE_STATE_COMMON, commandList);
-	//}
-	//
-	//commandList->Close();
-	//
-	//// Execute direct commands.
-	//{
-	//	std::array<ID3D12CommandList* const, 1> directCommandLists = { commandList.Get() };
-	//	m_directCommandQueue.commandQueue->ExecuteCommandLists((UINT)directCommandLists.size(), directCommandLists.data());
-	//
-	//	m_directCommandQueue.SignalAndWait(nullptr);
-	//}
 }
 
 void DX12Renderer::CreateRTVHeap()
@@ -771,26 +735,26 @@ void DX12Renderer::InitAssets()
 
 void DX12Renderer::CreateRootSignatures()
 {
-	std::array<CD3DX12_ROOT_PARAMETER, 3> rootParameters = {};
-	// Root parameter setup.
+	std::array<CD3DX12_ROOT_PARAMETER, DefaultRootParameterIdx::ParameterCount> rootParameters = {};
+	// Default root parameter setup.
 	{
 		// Add a matrix to the root signature where each element is stored as a constant.
-		rootParameters[0].InitAsConstants(
+		rootParameters[DefaultRootParameterIdx::MatrixIdx].InitAsConstants(
 			sizeof(dx::XMMATRIX) / 4,
-			RootSigRegisters::CBVRegisters::CBMatrixConstants,
+			ShaderRegisters::CBVRegisters::CBMatrixConstants,
 			0,
 			D3D12_SHADER_VISIBILITY_VERTEX
 		);
 
 		// Add descriptor table for instance specific constants.
 		CD3DX12_DESCRIPTOR_RANGE cbvTable;
-		cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, RootSigRegisters::CBVRegisters::CBDescriptorTable);
-		rootParameters[1].InitAsDescriptorTable(1, &cbvTable, D3D12_SHADER_VISIBILITY_ALL);
+		cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, ShaderRegisters::CBVRegisters::CBDescriptorTable);
+		rootParameters[DefaultRootParameterIdx::CBVTableIdx].InitAsDescriptorTable(1, &cbvTable, D3D12_SHADER_VISIBILITY_ALL);
 
 		// Add descriptor table for shader resources.
 		CD3DX12_DESCRIPTOR_RANGE srvTable;
-		srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, GBufferCount, RootSigRegisters::SRVRegisters::SRDescriptorTable);
-		rootParameters[2].InitAsDescriptorTable(1, &srvTable, D3D12_SHADER_VISIBILITY_PIXEL);
+		srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, GBufferCount, ShaderRegisters::SRVRegisters::SRDescriptorTable);
+		rootParameters[DefaultRootParameterIdx::SRVTableIdx].InitAsDescriptorTable(1, &srvTable, D3D12_SHADER_VISIBILITY_PIXEL);
 	}
 
 	// Static general sampler for all shaders.
@@ -878,13 +842,8 @@ void DX12Renderer::CreatePSOs()
 		pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
 		pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
-		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
-		// TODO: REMOVE LATER! THIS IS ONLY FOR TEMPORARY TESTING WITH GBUFFERS.
-		{
-			CD3DX12_DEPTH_STENCIL_DESC DepthStencilDesc = CD3DX12_DEPTH_STENCIL_DESC(CD3DX12_DEFAULT());
-			DepthStencilDesc.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-			pipelineStateStream.DepthStencil = DepthStencilDesc;
-		}
+		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get()); 
+		pipelineStateStream.DepthStencil = CD3DX12_DEPTH_STENCIL_DESC(CD3DX12_DEFAULT());
 		pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 		pipelineStateStream.RTVFormats = {
 			.RTFormats = { DXGI_FORMAT_R8G8B8A8_UNORM },
@@ -986,6 +945,7 @@ void DX12Renderer::CreateRenderObjects()
 
 		//m_renderObjectIDsByRenderPassType[GBufferPass].push_back(RenderObjectID::Cube);
 		m_renderObjectIDsByRenderPassType[DeferredGBufferPass].push_back(RenderObjectID::OBJModel1);
+		m_renderObjectIDsByRenderPassType[DeferredGBufferPass].push_back(RenderObjectID::Cube);
 	}
 	
 	// Create render objects.
@@ -1000,27 +960,28 @@ void DX12Renderer::CreateRenderObjects()
 	}
 
 	{
-		std::vector<Vertex> cubeData = { {
-			{ { -1.0f, -1.0f, -1.0f }, { 0.0f, 0.0f, 0.0f } }, // 0
-			{ { -1.0f,  1.0f, -1.0f }, { 0.0f, 1.0f, 0.0f } }, // 1
-			{ {  1.0f,  1.0f, -1.0f }, { 1.0f, 1.0f, 0.0f } }, // 2
-			{ {  1.0f, -1.0f, -1.0f }, { 1.0f, 0.0f, 0.0f } }, // 3
-			{ { -1.0f, -1.0f,  1.0f }, { 0.0f, 0.0f, 1.0f } }, // 4
-			{ { -1.0f,  1.0f,  1.0f }, { 0.0f, 1.0f, 1.0f } }, // 5
-			{ {  1.0f,  1.0f,  1.0f }, { 1.0f, 1.0f, 1.0f } }, // 6
-			{ {  1.0f, -1.0f,  1.0f }, { 1.0f, 0.0f, 1.0f } }  // 7
-		} };
+		//std::vector<Vertex> cubeData = { {
+		//	{ { -1.0f, -1.0f, -1.0f }, { 0.0f, 0.0f, 0.0f } }, // 0
+		//	{ { -1.0f,  1.0f, -1.0f }, { 0.0f, 1.0f, 0.0f } }, // 1
+		//	{ {  1.0f,  1.0f, -1.0f }, { 1.0f, 1.0f, 0.0f } }, // 2
+		//	{ {  1.0f, -1.0f, -1.0f }, { 1.0f, 0.0f, 0.0f } }, // 3
+		//	{ { -1.0f, -1.0f,  1.0f }, { 0.0f, 0.0f, 1.0f } }, // 4
+		//	{ { -1.0f,  1.0f,  1.0f }, { 0.0f, 1.0f, 1.0f } }, // 5
+		//	{ {  1.0f,  1.0f,  1.0f }, { 1.0f, 1.0f, 1.0f } }, // 6
+		//	{ {  1.0f, -1.0f,  1.0f }, { 1.0f, 0.0f, 1.0f } }  // 7
+		//} };
+		//
+		//std::vector<uint32_t> cubeIndices = {
+		//		0, 1, 2, 0, 2, 3, // front face
+		//		4, 6, 5, 4, 7, 6, // back face
+		//		4, 5, 1, 4, 1, 0, // left face
+		//		3, 2, 6, 3, 6, 7, // right face
+		//		1, 5, 6, 1, 6, 2, // top face
+		//		4, 0, 3, 4, 3, 7  // bottom face
+		//};
 
-		std::vector<uint32_t> cubeIndices = {
-				0, 1, 2, 0, 2, 3, // front face
-				4, 6, 5, 4, 7, 6, // back face
-				4, 5, 1, 4, 1, 0, // left face
-				3, 2, 6, 3, 6, 7, // right face
-				1, 5, 6, 1, 6, 2, // top face
-				4, 0, 3, 4, 3, 7  // bottom face
-		};
-
-		m_renderObjectsByID[RenderObjectID::Cube] = CreateRenderObject(&cubeData, &cubeIndices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		std::string modelPath = std::string(AssetsPath) + "cube.obj";
+		m_renderObjectsByID[RenderObjectID::Cube] = CreateRenderObjectFromOBJ(modelPath, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	}
 
 	// Add obj model.
@@ -1335,7 +1296,7 @@ RenderObject DX12Renderer::CreateRenderObjectFromOBJ(const std::string& objPath,
 
 	}
 
-	return CreateRenderObject(&vertices, &indices, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	return CreateRenderObject(&vertices, &indices, topology);
 }
 
 CommandQueueHandler::CommandQueueHandler(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE type)
