@@ -24,6 +24,7 @@ enum RenderPassType : uint32_t
 	IndexedPass,
 	DeferredGBufferPass,
 	DeferredLightingPass,
+	RaytracedAOPass,
 
 	NumRenderPasses // Keep this last!
 };
@@ -40,14 +41,44 @@ enum GBufferID : UINT
 
 // The maximum number of instances that can be rendered in a single draw call.
 constexpr uint32_t MaxRenderInstances = 32u;
+constexpr uint32_t MiddleTextureDescriptorCount = 2;
 
-// This should be a sum of all the descriptors for this type of descriptor.
-constexpr uint32_t NumCBVSRVUAVDescriptors = MaxRenderInstances + GBufferCount;
+constexpr uint32_t MaxRTVDescriptors = 20u;
+// This should be below the sum of all the descriptors for this type of descriptor.
+constexpr uint32_t MaxCBVSRVUAVDescriptors = 100u;
 
+// The count of different types of descriptors.
+enum CBVSRVUAVCounts : UINT
+{
+	CBVCountRenderInstance = MaxRenderInstances,
+	SRVCountGbuffers = GBufferCount,
+	SRVCountMiddleTexture = 1,
+	SRVCountTLAS = 1,
+	UAVCountMiddleTexture = 1
+};
 
+// Offsets for descriptors in the descriptor heap. The pattern is always adding the value before and adding its equivalent count.
+// So its always: [DescriptorType]Offset[SpecificName] + [DescriptorType]Count[SpecificName].
 enum CBVSRVUAVOffsets : UINT {
 	CBVOffsetRenderInstance = 0,
-	SRVOffsetGBuffers = MaxRenderInstances
+	SRVOffsetGBuffers = CBVCountRenderInstance,
+	SRVOffsetMiddleTexture = SRVOffsetGBuffers + SRVCountGbuffers,
+	SRVOffsetTLAS = SRVOffsetMiddleTexture + SRVCountMiddleTexture,
+	UAVOffsetMiddleTexture = SRVOffsetTLAS + SRVCountTLAS
+};
+
+enum RTVCounts : UINT
+{
+	RTVCountBackbuffers = BufferCount,
+	RTVCountGbuffers = GBufferCount,
+	RTVCountMiddleTexture = 1
+};
+
+enum RTVOffsets : UINT
+{
+	RTVOffsetBackBuffers = 0, // Back buffers should always come first for simplicity.
+	RTVOffsetGBuffers = RTVOffsetBackBuffers + RTVCountBackbuffers,
+	RTVOffsetMiddleTexture = RTVOffsetGBuffers + RTVCountGbuffers
 };
 
 struct InstanceConstants
@@ -62,7 +93,7 @@ enum class RenderObjectID : uint32_t
 	OBJModel1
 };
 
-namespace ShaderRegisters {
+namespace RasterShaderRegisters {
 
 	enum CBVRegisters : uint32_t {
 		CBMatrixConstants = 0,
@@ -75,11 +106,39 @@ namespace ShaderRegisters {
 
 }
 
+namespace RTShaderRegisters {
+
+	enum SRVRegisters : uint32_t {
+		SRDescriptorTable = 0
+	};
+
+	enum UAVRegisters : uint32_t {
+		UAVDescriptor = 0
+	};
+
+}
+
 enum DefaultRootParameterIdx
 {
 	MatrixIdx = 0,
 	CBVTableIdx = 1,
 	SRVTableIdx = 2,
 
-	ParameterCount // Keep last!
+	DefaultRootParameterCount // Keep last!
+};
+
+enum RTRayGenParameterIdx
+{
+	RayGenSRVTableIdx = 0,
+	RayGenUAVTableIdx = 1,
+
+	RTRayGenParameterCount // Keep last!
+};
+
+enum RTHitGroupParameterIdx
+{
+	HitGroupSRVTableIdx = 0,
+	HitGroupUAVIdx = 1,
+
+	RTHitGroupParameterCount // Keep last!
 };

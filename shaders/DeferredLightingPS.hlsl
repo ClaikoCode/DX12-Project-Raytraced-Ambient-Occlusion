@@ -4,11 +4,11 @@ struct VSQuadOut
 	float2 texcoord : UV;
 };
 
-SamplerState textureSampler : register(s0);
-
 Texture2D<float4> diffuse : register(t0);
 Texture2D<float4> normal : register(t1);
 Texture2D<float4> position : register(t2);
+
+SamplerState textureSampler : register(s0);
 
 struct DirectionalLight
 {

@@ -9,6 +9,17 @@
 using Microsoft::WRL::ComPtr;
 using DX12Abstractions::GPUResource;
 
+struct Vertex
+{
+	DirectX::XMFLOAT3 position;
+	DirectX::XMFLOAT3 normal;
+	DirectX::XMFLOAT3 color;
+
+	static const DXGI_FORMAT sVertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+};
+
+typedef uint32_t VertexIndex;
+
 struct DrawArgs
 {
 	UINT vertexCount = UINT_MAX;

@@ -54,6 +54,9 @@ namespace DX12Abstractions
 	template<> inline DXGI_FORMAT GetDXGIFormat<float>() { return DXGI_FORMAT_R32_FLOAT; }
 	template<> inline DXGI_FORMAT GetDXGIFormat<uint32_t>() { return DXGI_FORMAT_R32_UINT; }
 	template<> inline DXGI_FORMAT GetDXGIFormat<uint16_t>() { return DXGI_FORMAT_R16_UINT; }
+
+	typedef std::vector<Microsoft::WRL::ComPtr<ID3D12CommandList>> CommandListVector;
+	ID3D12CommandList* const* GetCommandListPtr(CommandListVector& commandListVec, const UINT offset);
 }
 
 // Naming helper for ComPtr<T>.

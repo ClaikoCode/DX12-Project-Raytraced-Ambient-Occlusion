@@ -14,9 +14,9 @@ using namespace DirectX;
 using DX12Abstractions::GPUResource;
 
 typedef std::array<ComPtr<ID3D12CommandAllocator>, NumContexts> CommandAllocators;
-typedef std::array<ComPtr<ID3D12GraphicsCommandList>, NumContexts> CommandLists;
+typedef std::array<ComPtr<ID3D12GraphicsCommandList4>, NumContexts> CommandLists;
 
-void SetCommonStates(CommonRenderPassArgs commonArgs, ComPtr<ID3D12PipelineState> pipelineState, ComPtr<ID3D12GraphicsCommandList> commandList);
+void SetCommonStates(CommonRenderPassArgs commonArgs, ComPtr<ID3D12PipelineState> pipelineState, ComPtr<ID3D12GraphicsCommandList4> commandList);
 
 // Assumes that the void* is not null. This assertion should happen before usage.
 template<typename T>
@@ -98,6 +98,19 @@ class DeferredLightingRenderPass : public DX12RenderPass
 {
 public:
 	DeferredLightingRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
+		: DX12RenderPass(device, pipelineState) {}
+
+	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs) override final;
+
+private:
+	void PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context) override final;
+	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context) override final;
+};
+
+class RaytracedAORenderPass : public DX12RenderPass
+{
+public:
+	RaytracedAORenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
 		: DX12RenderPass(device, pipelineState) {}
 
 	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs) override final;

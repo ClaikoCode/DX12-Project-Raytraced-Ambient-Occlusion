@@ -3,7 +3,12 @@
 #include "GraphicsErrorHandling.h"
 #include "DX12AbstractionUtils.h"
 
-void SetCommonStates(CommonRenderPassArgs commonArgs, ComPtr<ID3D12PipelineState> pipelineState, ComPtr<ID3D12GraphicsCommandList> commandList)
+/*
+	HUGE TODO: Split these up into their own header files and source files so it is easier to read.
+
+*/
+
+void SetCommonStates(CommonRenderPassArgs commonArgs, ComPtr<ID3D12PipelineState> pipelineState, ComPtr<ID3D12GraphicsCommandList4> commandList)
 {
 	// Set root signature and pipeline state.
 	commandList->SetGraphicsRootSignature(commonArgs.rootSignature.Get());
@@ -201,7 +206,7 @@ void IndexedRenderPass::PerRenderObject(const RenderObject& renderObject, Render
 
 void IndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
 {
-	IndexedRenderPassArgs args = ToSpecificArgs<IndexedRenderPassArgs>(pipelineArgs);
+	IndexedRenderPassArgs& args = ToSpecificArgs<IndexedRenderPassArgs>(pipelineArgs);
 	auto commandList = commandLists[context];
 
 	SetInstanceCB(args.commonArgs, renderInstance, commandList);
@@ -213,7 +218,7 @@ void DeferredGBufferRenderPass::Render(const std::vector<RenderPackage>& renderP
 {
 	// TODO: Handle this error better.
 	assert(pipelineSpecificArgs != nullptr);
-	DeferredGBufferRenderPassArgs args = ToSpecificArgs<DeferredGBufferRenderPassArgs>(pipelineSpecificArgs);
+	DeferredGBufferRenderPassArgs& args = ToSpecificArgs<DeferredGBufferRenderPassArgs>(pipelineSpecificArgs);
 
 	auto commandList = commandLists[context];
 	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
@@ -257,7 +262,7 @@ void DeferredGBufferRenderPass::PerRenderObject(const RenderObject& renderObject
 
 void DeferredGBufferRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
 {
-	DeferredGBufferRenderPassArgs args = ToSpecificArgs<DeferredGBufferRenderPassArgs>(pipelineArgs);
+	DeferredGBufferRenderPassArgs& args = ToSpecificArgs<DeferredGBufferRenderPassArgs>(pipelineArgs);
 	auto commandList = commandLists[context];
 
 	SetInstanceCB(args.commonArgs, renderInstance, commandList);
@@ -269,7 +274,7 @@ void DeferredGBufferRenderPass::PerRenderInstance(const RenderInstance& renderIn
 void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
 {
 	assert(pipelineSpecificArgs != nullptr);
-	DeferredLightingRenderPassArgs args = ToSpecificArgs<DeferredLightingRenderPassArgs>(pipelineSpecificArgs);
+	DeferredLightingRenderPassArgs& args = ToSpecificArgs<DeferredLightingRenderPassArgs>(pipelineSpecificArgs);
 
 	auto commandList = commandLists[context];
 
@@ -290,10 +295,72 @@ void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& render
 
 void DeferredLightingRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
 {
-
+	// No OP.
 }
 
 void DeferredLightingRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
+{
+	// No OP.
+}
+
+void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
+{
+	// TODO: This is a temporary fix to not forget that this will not work for more contexts.
+	assert(context == 0);
+	if (context != 0)
+		return;
+
+	assert(pipelineSpecificArgs != nullptr);
+	const RaytracedAORenderPassArgs& args = ToSpecificArgs<RaytracedAORenderPassArgs>(pipelineSpecificArgs);
+
+	auto commandList = commandLists[context];
+
+	// Set descriptor heap.
+	std::array<ID3D12DescriptorHeap*, 1> descriptorHeaps = { args.commonRTArgs.cbvSrvUavHeap.Get() };
+	commandList->SetDescriptorHeaps((UINT)descriptorHeaps.size(), descriptorHeaps.data());
+	
+	// TODO: Move to main thread.
+	// SetResourceTransitionBarrier(gCommandList4, mpOutputResource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	
+	D3D12_DISPATCH_RAYS_DESC raytraceDesc = {};
+	raytraceDesc.Width = args.screenWidth;
+	raytraceDesc.Height = args.screenHeight;
+	raytraceDesc.Depth = 1;
+
+	//set shader tables
+	DX12Abstractions::ShaderTableData* rayGenShaderTableData = args.commonRTArgs.rayGenShaderTable;
+	assert(rayGenShaderTableData != nullptr);
+	raytraceDesc.RayGenerationShaderRecord.StartAddress = rayGenShaderTableData->GetResourceGPUVirtualAddress();
+	raytraceDesc.RayGenerationShaderRecord.SizeInBytes = rayGenShaderTableData->sizeInBytes;
+
+
+	DX12Abstractions::ShaderTableData* missShaderTableData = args.commonRTArgs.missShaderTable;
+	assert(missShaderTableData != nullptr);
+	raytraceDesc.MissShaderTable.StartAddress = missShaderTableData->GetResourceGPUVirtualAddress();
+	raytraceDesc.MissShaderTable.StrideInBytes = missShaderTableData->strideInBytes;
+	raytraceDesc.MissShaderTable.SizeInBytes = missShaderTableData->sizeInBytes;
+
+
+	DX12Abstractions::ShaderTableData* hitGroupShaderTableData = args.commonRTArgs.hitGroupShaderTable;
+	assert(missShaderTableData != nullptr);
+	raytraceDesc.HitGroupTable.StartAddress = hitGroupShaderTableData->GetResourceGPUVirtualAddress();
+	raytraceDesc.HitGroupTable.StrideInBytes = hitGroupShaderTableData->strideInBytes;
+	raytraceDesc.HitGroupTable.SizeInBytes = hitGroupShaderTableData->sizeInBytes;
+
+	// Bind the empty root signature
+	commandList->SetComputeRootSignature(args.commonRTArgs.globalRootSig.Get());
+
+	// Dispatch
+	commandList->SetPipelineState1(args.stateObject.Get());
+	commandList->DispatchRays(&raytraceDesc);
+}
+
+void RaytracedAORenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
+{
+
+}
+
+void RaytracedAORenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
 {
 
 }
