@@ -4,6 +4,7 @@
 
 #include <array>
 #include <unordered_map>
+#include <memory>
 
 #include "GPUResource.h"
 #include "RenderObject.h"
@@ -11,38 +12,33 @@
 #include "DX12RenderPass.h"
 #include "AppDefines.h"
 #include "Camera.h"
+#include "DX12AbstractionUtils.h"
+#include "DXRAbstractions.h"
 
 using Microsoft::WRL::ComPtr;
 
-
 constexpr std::array<DXGI_FORMAT, GBufferCount> GBufferFormats = { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT };
+constexpr DXGI_FORMAT BackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
-enum RTVOffsets : UINT
-{
-	RTVOffsetBackBuffers = 0, // Back buffers should always come first for simplicity.
-	RTVOffsetGBuffers = BufferCount
-};
-
-
-
-// TODO: move this to a more appropriate place.
-struct Vertex
-{
-	DirectX::XMFLOAT3 position;
-	DirectX::XMFLOAT3 normal;
-	DirectX::XMFLOAT3 color;
-};
-
+constexpr LPCWSTR MissShaderName = L"miss";
+constexpr LPCWSTR RayGenShaderName = L"raygen";
+constexpr LPCWSTR AnyHitShaderName = L"anyhit";
+constexpr LPCWSTR HitGroupName = L"HitGroup";
+ 
 class CommandQueueHandler
 {
 public:
-	CommandQueueHandler() = default;
+	CommandQueueHandler();
+	~CommandQueueHandler();
 	CommandQueueHandler(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE type);
+	CommandQueueHandler(const CommandQueueHandler& other) = delete;
+	CommandQueueHandler& operator= (const CommandQueueHandler& other) = delete;
 
 	ComPtr<ID3D12CommandQueue> commandQueue;
 	ComPtr<ID3D12CommandAllocator> commandAllocator;
 
-	ComPtr<ID3D12GraphicsCommandList1> CreateCommandList(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_FLAGS flags = D3D12_COMMAND_LIST_FLAG_NONE);
+	// Automatically resets the command list by default. If the usage pattern involves manual resetting in a loop for example, set argument to false.
+	ComPtr<ID3D12GraphicsCommandList4> CreateCommandList(ComPtr<ID3D12Device5> device, bool autoReset = true, D3D12_COMMAND_LIST_FLAGS flags = D3D12_COMMAND_LIST_FLAG_NONE);
 
 	ID3D12CommandQueue* Get() const;
 
@@ -52,12 +48,15 @@ public:
 
 	void Signal();
 	// If nullptr is passed, the function will wait indefinitely.
-	void Wait(HANDLE event);
+	void Wait();
 	// If nullptr is passed, the function will wait indefinitely.
-	void SignalAndWait(HANDLE event);
+	void SignalAndWait();
+
+	void ExecuteCommandLists(DX12Abstractions::CommandListVector& commandLists, UINT count = 0, const UINT offset = 0);
 
 private:
 	ComPtr<ID3D12Fence> m_fence;
+	HANDLE m_eventHandle; // TODO: Properly add event handle.
 	UINT64 m_fenceValue;
 	D3D12_COMMAND_LIST_TYPE m_type;
 };
@@ -65,6 +64,8 @@ private:
 // Singleton class designed with a public constructor that only is allowed to be called once.
 class DX12Renderer
 {
+public:
+	static ComPtr<ID3D12InfoQueue1> GetInfoQueue();
 
 public:
 	static void Init(UINT width, UINT height, HWND windowHandle);
@@ -72,6 +73,8 @@ public:
 
 	void Update();
 	void Render();
+
+	
 
 private:
 
@@ -85,6 +88,7 @@ private:
 	void InitPipeline();
 	void CreateDeviceAndSwapChain();
 	void CreateGBuffers();
+	void CreateMiddleTexture();
 	void CreateRTVHeap();
 	void CreateRTVs();
 	void CreateDepthBuffer();
@@ -92,8 +96,9 @@ private:
 	void CreateDSV();
 	void CreateConstantBuffers();
 	void CreateCBVSRVUAVHeap();
-	void CreateCBV();
-	void CreateSRV();
+	void CreateCBVs();
+	void CreateSRVs();
+	void CreateUAVs();
 
 	void InitAssets();
 	void CreateRootSignatures();
@@ -102,13 +107,30 @@ private:
 	void CreateCamera();
 	void CreateRenderInstances();
 
+	void InitRaytracing();
+	void CreateAccelerationStructures();
+	void CreateBottomLevelASs(ComPtr<ID3D12GraphicsCommandList4> commandList);
+	void CreateBottomLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList);
+	void CreateTopLevelASs(ComPtr<ID3D12GraphicsCommandList4> commandList);
+	void CreateTopLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList);
+	void CreateRaytracingPipelineState();
+	void CreateRayGenLocalRootSignature(ComPtr<ID3D12RootSignature>& rootSig);
+	void CreateHitGroupLocalRootSignature(ComPtr<ID3D12RootSignature>& rootSig);
+	void CreateMissLocalRootSignature(ComPtr<ID3D12RootSignature>& rootSig);
+	void CreateGlobalRootSignature(ComPtr<ID3D12RootSignature>& rootSig);
+	void CreateShaderTables();
+	void CreateTopLevelASDescriptors();
+
+	void SerializeAndCreateRootSig(CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc, ComPtr<ID3D12RootSignature>& rootSig);
+
 	void UpdateInstanceConstantBuffers();
+	void UpdateTopLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList);
 
 	void RegisterRenderPass(const RenderPassType renderPassType, ComPtr<ID3D12PipelineState> pipelineState);
 	
 	void ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList);
 
-	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology);
+	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<VertexIndex>* indices, D3D12_PRIMITIVE_TOPOLOGY topology);
 	RenderObject CreateRenderObjectFromOBJ(const std::string& objPath, D3D12_PRIMITIVE_TOPOLOGY topology);
 
 private:
@@ -124,14 +146,15 @@ private:
 	ComPtr<ID3D12Device5> m_device;
 	
 	// Command queues that are to be used by the main thread.
-	CommandQueueHandler m_directCommandQueue;
-	CommandQueueHandler m_copyCommandQueue;
+	std::unique_ptr<CommandQueueHandler> m_directCommandQueue;
+	std::unique_ptr<CommandQueueHandler> m_copyCommandQueue;
 
 	ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
 	UINT m_rtvDescriptorSize;
 
 	std::array<DX12Abstractions::GPUResource, GBufferCount> m_gBuffers;
-	std::array<DX12Abstractions::GPUResource, BufferCount> m_renderTargets;
+	std::array<DX12Abstractions::GPUResource, BufferCount> m_backBuffers;
+	DX12Abstractions::GPUResource m_middleTexture;
 
 	ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
 	ComPtr<ID3D12Resource> m_depthBuffer;
@@ -141,7 +164,10 @@ private:
 	GPUResource m_perInstanceCB;
 
 	std::unordered_map<RenderPassType, std::unique_ptr<DX12RenderPass>> m_renderPasses;
-	ComPtr<ID3D12RootSignature> m_rootSignature;
+	ComPtr<ID3D12RootSignature> m_rasterRootSignature;
+
+	ComPtr<ID3D12RootSignature> m_RTGlobalRootSignature;
+	ComPtr<ID3D12StateObject> m_RTPipelineState;
 
 	// Synchronization objects.
 	DX12SyncHandler m_syncHandler;
@@ -149,6 +175,13 @@ private:
 	std::unordered_map<RenderObjectID, RenderObject> m_renderObjectsByID;
 	std::unordered_map<RenderObjectID, std::vector<RenderInstance>> m_renderInstancesByID;
 	std::unordered_map<RenderPassType, std::vector<RenderObjectID>> m_renderObjectIDsByRenderPassType;
+
+	std::unordered_map<RenderObjectID, DX12Abstractions::AccelerationStructureBuffers> m_bottomAccStructByID;
+	std::unordered_map<RenderObjectID, DX12Abstractions::AccelerationStructureBuffers> m_topAccStructByID;
+
+	DX12Abstractions::ShaderTableData m_rayGenShaderTable;
+	DX12Abstractions::ShaderTableData m_hitGroupShaderTable;
+	DX12Abstractions::ShaderTableData m_missShaderTable;
 
 	Camera* m_activeCamera;
 	std::vector<Camera> m_cameras;

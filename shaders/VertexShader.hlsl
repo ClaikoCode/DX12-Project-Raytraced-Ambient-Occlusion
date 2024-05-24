@@ -35,12 +35,16 @@ VSOut main(VSIn input)
     matrix transposedTransform = transpose(transf.transform);
     matrix mvpMatrix = mul(transposedTransform, transpose(camInfo.viewProjMatrix));
 
-    output.pos = mul(float4(input.pos, 1.0f), mvpMatrix);
-    output.worldPos = mul(float4(input.pos, 1.0f), transposedTransform);
+    float4 inputPosition = float4(input.pos, 1.0f);
+    output.pos = mul(inputPosition, mvpMatrix);
+    output.worldPos = mul(inputPosition, transposedTransform);
+   
+    float4 inputNormal = float4(normalize(input.normal), 0.0f);
+    output.normal = mul(inputNormal, mvpMatrix);    
+    float3 worldNormal = mul(inputNormal, transposedTransform).xyz;
+    output.worldNormal = float4(normalize(worldNormal), 0.0f);
+    
     output.color = float4(input.color, 1.0f);
-
-    output.normal = float4(input.normal, 0.0f);
-    output.worldNormal = mul(float4(normalize(input.normal), 0.0f), transposedTransform);
 
     return output;
 }

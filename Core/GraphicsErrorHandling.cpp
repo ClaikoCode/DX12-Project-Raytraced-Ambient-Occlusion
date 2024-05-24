@@ -6,6 +6,7 @@
 #include <format>
 #include <algorithm>
 
+#include "DX12Renderer.h"
 
 namespace ErrorHandling
 {
@@ -58,6 +59,32 @@ namespace ErrorHandling
 
 			// Format the error string.
 			std::string errorString = std::format("Graphics ERROR ({}): {}\t{} ({})\n", catcher.hr, errorDescription, catcher.loc.file_name(), catcher.loc.line());
+
+			Microsoft::WRL::ComPtr<ID3D12InfoQueue1> infoQueue = DX12Renderer::GetInfoQueue();
+			while (infoQueue != nullptr && infoQueue->GetNumStoredMessages() > 0)
+			{
+				errorString += "ERROR STRING NOTICED\n";
+
+				SIZE_T messageLength = 0;
+				HRESULT hr = infoQueue->GetMessageW(0, NULL, &messageLength);
+			
+				if (FAILED(hr))
+				{
+					OutputDebugStringW(L"COULD NOT GET MESSAGE FROM INFO QUEUE\n");
+					break;
+				}
+			
+				D3D12_MESSAGE* message = (D3D12_MESSAGE*)malloc(messageLength);
+				hr = infoQueue->GetMessageW(0, message, &messageLength);
+				
+				if (FAILED(hr))
+				{
+					free(message);
+					break;
+				}
+
+				free(message);
+			}
 
 			throw std::runtime_error(errorString);
 		}

@@ -46,6 +46,8 @@ public:
 	DirectX::XMMATRIX GetViewProjectionMatrix() const;
 
 	void SetPosAndDir(std::array<float, 3> pos, std::array<float, 3> dir);
+	void SetPosAndLookAt(std::array<float, 3> pos, std::array<float, 3> dir);
+	void SetPosAndLookAt(DirectX::XMVECTOR pos, DirectX::XMVECTOR lookAt);
 
 	const CameraData& GetData() const;
 

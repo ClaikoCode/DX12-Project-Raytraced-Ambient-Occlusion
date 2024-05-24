@@ -11,6 +11,11 @@
 using namespace DX12Abstractions;
 namespace dx = DirectX;
 
+bool HasRenderPass(std::vector<RenderPassType>& renderPassOrder, const RenderPassType pass)
+{
+	return std::find(renderPassOrder.begin(), renderPassOrder.end(), pass) != renderPassOrder.end();
+}
+
 void ReadObjFile(std::string modelPath, tinyobj::ObjReader& reader, tinyobj::ObjReaderConfig config)
 {
 	if (!reader.ParseFromFile(modelPath, config))
@@ -49,6 +54,19 @@ void GetObjVertexIndices(std::vector<T>& vertexIndices, tinyobj::ObjReader& read
 
 DX12Renderer* DX12Renderer::s_instance = nullptr;
 
+ComPtr<ID3D12InfoQueue1> DX12Renderer::GetInfoQueue()
+{
+	if (s_instance != nullptr)
+	{
+		ComPtr<ID3D12InfoQueue1> infoQueue;
+		s_instance->m_device->QueryInterface(IID_PPV_ARGS(&infoQueue));
+
+		return infoQueue;
+	}
+
+	return nullptr;
+}
+
 void DX12Renderer::Init(UINT width, UINT height, HWND windowHandle)
 {
 	// Will save the instance in the classes static variable.
@@ -72,12 +90,15 @@ void DX12Renderer::Update()
 
 void DX12Renderer::Render()
 {
+	static UINT sFrameCount = 0;
+
 	static float t = 0;
 	t += 1 / 144.0f;
 
 	UINT currBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
 
 	// Store command lists for each render pass.
+	// TODO: Make as CommandListVector for consistency.
 	std::vector<ComPtr<ID3D12CommandList>> commandLists;
 
 	// Before render pass setup.
@@ -118,12 +139,18 @@ void DX12Renderer::Render()
 	}
 
 	// Fetch the current back buffer that we want to render to.
-	auto& backBuffer = m_renderTargets[currBackBufferIndex];
+	GPUResource& currentBackBuffer = m_backBuffers[currBackBufferIndex];
 
 	// Get RTV handle for the current back buffer.
-	const CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(
+	const CD3DX12_CPU_DESCRIPTOR_HANDLE bbRTV (
 		m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
 		currBackBufferIndex,
+		m_rtvDescriptorSize
+	);
+
+	const CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureRTV(
+		m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
+		RTVOffsets::RTVOffsetMiddleTexture,
 		m_rtvDescriptorSize
 	);
 
@@ -139,15 +166,36 @@ void DX12Renderer::Render()
 	// Reset post command list.
 	mainThreadCommandListPost->Reset(mainThreadCommandAllocatorPost.Get(), nullptr);
 	
+	std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass };
+
 	// Pre render pass setup.
 	{
 		// Clear back buffer and prime for rendering.
 		{
-			backBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
+			currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
 
 			float clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
-			mainThreadCommandListPre->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
+			mainThreadCommandListPre->ClearRenderTargetView(bbRTV, clearColor, 0, nullptr);
 		}
+
+		// Clear middle texture.
+		{
+			m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
+
+			mainThreadCommandListPre->ClearRenderTargetView(middleTextureRTV, OptimizedClearColor, 0, nullptr);
+		}
+
+		// Setup gbuffers.
+		if (HasRenderPass(renderPassOrder, RenderPassType::DeferredGBufferPass))
+		{
+			for (GPUResource& gBuffer : m_gBuffers)
+			{
+				gBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
+			}
+
+			ClearGBuffers(mainThreadCommandListPre);
+		}
+		
 
 		// Clear depth buffer.
 		mainThreadCommandListPre->ClearDepthStencilView(
@@ -167,7 +215,7 @@ void DX12Renderer::Render()
 	}
 
 	//std::vector<RenderPassType> renderPassOrder = { IndexedPass, NonIndexedPass };
-	std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass, DeferredLightingPass };
+	
 
 	// Initialize all render passes.
 	for (auto& renderPass : renderPassOrder)
@@ -182,19 +230,36 @@ void DX12Renderer::Render()
 	}
 
 	// Update camera before rendering.
+	dx::XMVECTOR startPos = dx::XMVectorSet(0.0f, 0.0f, -14.0f, 1.0f);
+	float angle = t * dx::XM_2PI / 20.0f * 0.0f;
+	dx::XMMATRIX rotationMatrix = dx::XMMatrixRotationNormal(dx::XMVectorSet(0.0f, 1.0f, 0.0f, 1.0f), angle);
+	dx::XMVECTOR newPos = dx::XMVector3Transform(startPos, rotationMatrix);
+
+	m_activeCamera->SetPosAndLookAt(newPos, dx::XMVectorSet(0.0f, 0.0f, 0.0f, 1.0f));
 	m_activeCamera->UpdateViewMatrix();
 	m_activeCamera->UpdateViewProjectionMatrix();
 
 	// Common args for all passes.
 	CommonRenderPassArgs commonArgs = {
 		dsv,
-		m_rootSignature,
+		m_rasterRootSignature,
 		m_viewport,
 		m_scissorRect,
 		m_cbvSrvUavHeap,
 		m_cbvSrvUavDescriptorSize,
 		t,
 		m_activeCamera->GetViewProjectionMatrix()
+	};
+
+	CommonRaytracingRenderPassArgs commonRTArgs = {
+		.cbvSrvUavHeap = m_cbvSrvUavHeap,
+		.cbvSrvUavDescSize = m_cbvSrvUavDescriptorSize,
+
+		.globalRootSig = m_RTGlobalRootSignature,
+
+		.rayGenShaderTable = &m_rayGenShaderTable,
+		.hitGroupShaderTable = &m_hitGroupShaderTable,
+		.missShaderTable = &m_missShaderTable
 	};
 
 	// This is supposed to be ran by different threads.
@@ -226,7 +291,7 @@ void DX12Renderer::Render()
 
 			// Only try to render if there actually is anything to render.
 			// Deferred lighting pass does not render any packages and should be allowed to execute without it.
-			if (renderPackages.size() > 0 || renderPassType == DeferredLightingPass)
+			if (renderPackages.size() > 0 || renderPassType == DeferredLightingPass || renderPassType == RaytracedAOPass)
 			{
 				RenderPassArgs renderPassArgs;
 
@@ -234,30 +299,18 @@ void DX12Renderer::Render()
 				{
 					renderPassArgs = NonIndexedRenderPassArgs{
 						.commonArgs = commonArgs,
-						.RTV = rtv
+						.RTV = bbRTV
 					};
 				}
 				else if (renderPassType == IndexedPass)
 				{
 					renderPassArgs = IndexedRenderPassArgs{
 						.commonArgs = commonArgs,
-						.RTV = rtv
+						.RTV = bbRTV
 					};
 				}
 				else if (renderPassType == DeferredGBufferPass)
 				{
-					if (context == 0)
-					{
-						auto commandList = renderPass.commandLists[context];
-
-						for (GPUResource& gBuffer : m_gBuffers)
-						{
-							gBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, commandList);
-						}
-
-						ClearGBuffers(commandList);
-					}
-
 					// Get RTV handle for the first GBuffer.
 					const CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle(
 						m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
@@ -280,11 +333,37 @@ void DX12Renderer::Render()
 						{
 							gBuffer.TransitionTo(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, commandList);
 						}
+
+						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, commandList);
 					}
 
 					renderPassArgs = DeferredLightingRenderPassArgs {
 						.commonArgs = commonArgs,
-						.RTV = rtv
+						.RTV = middleTextureRTV
+					};
+				}
+				else if (renderPassType == RaytracedAOPass)
+				{
+					if (context == 0)
+					{
+						auto commandList = renderPass.commandLists[context];
+
+						for (GPUResource& gBuffer : m_gBuffers)
+						{
+							gBuffer.TransitionTo(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList);
+						}
+
+						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList);
+
+						UpdateTopLevelAccelerationStructure(RenderObjectID::OBJModel1, commandList);
+					}
+
+					renderPassArgs = RaytracedAORenderPassArgs {
+						.commonRTArgs = commonRTArgs,
+						.stateObject = m_RTPipelineState,
+						.frameCount = sFrameCount,
+						.screenWidth = m_width,
+						.screenHeight = m_height,
 					};
 				}
 				else
@@ -318,8 +397,13 @@ void DX12Renderer::Render()
 		}
 	}
 
-	// Prepare for present
-	backBuffer.TransitionTo(D3D12_RESOURCE_STATE_PRESENT, mainThreadCommandListPost);
+	// Coppy middle texture to backbuffer.
+	m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_COPY_SOURCE, mainThreadCommandListPost);
+	currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_COPY_DEST, mainThreadCommandListPost);
+	mainThreadCommandListPost->CopyResource(currentBackBuffer.Get(), m_middleTexture.Get());
+
+	// Prepare backbuffer for present
+	currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_PRESENT, mainThreadCommandListPost);
 
 	// Close post command list.
 	mainThreadCommandListPost->Close() >> CHK_HR;
@@ -329,23 +413,35 @@ void DX12Renderer::Render()
 
 	// Execute all command lists.
 	{
-		ID3D12CommandList* const* commandListsRaw = commandLists[0].GetAddressOf();
-		m_directCommandQueue.commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
+		for (UINT i = 0; i < commandLists.size(); i++)
+		{
+			ID3D12CommandList* const* commandListsRaw = commandLists[i].GetAddressOf();
+			m_directCommandQueue->commandQueue->ExecuteCommandLists(1, commandListsRaw);
+			m_directCommandQueue->SignalAndWait();
+		}
+
+		//m_directCommandQueue->commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
 	}
 
 	// Insert fence that signifies command list completion.
-	m_directCommandQueue.Signal();
+	m_directCommandQueue->Signal();
 
 	// Present
-	m_swapChain->Present(1, 0) >> CHK_HR;
+	m_swapChain->Present(0, 0) >> CHK_HR;
 
 	// Wait for the command queue to finish.
-	m_directCommandQueue.Wait(nullptr);
+	m_directCommandQueue->Wait();
 
+	// Increment frame count.
+	sFrameCount++;
 }
 
 DX12Renderer::~DX12Renderer()
 {
+	// Wait for GPU commands to finish executing before destroying.
+	m_directCommandQueue->SignalAndWait();
+	m_copyCommandQueue->SignalAndWait();
+
 	s_instance = nullptr;
 }
 
@@ -362,6 +458,7 @@ DX12Renderer::DX12Renderer(UINT width, UINT height, HWND windowHandle) :
 
 	InitPipeline();
 	InitAssets();
+	InitRaytracing();
 }
 
 
@@ -369,6 +466,7 @@ void DX12Renderer::InitPipeline()
 {
 	CreateDeviceAndSwapChain();
 	CreateGBuffers();
+	CreateMiddleTexture();
 	CreateRTVHeap();
 	CreateRTVs();
 	CreateDepthBuffer();
@@ -378,8 +476,9 @@ void DX12Renderer::InitPipeline()
 	// TODO: Check if this makes sense to be in "init pipeline".
 	CreateConstantBuffers();
 	CreateCBVSRVUAVHeap();
-	CreateCBV();
-	CreateSRV();
+	CreateCBVs();
+	CreateSRVs();
+	CreateUAVs();
 }
 
 void DX12Renderer::CreateDeviceAndSwapChain()
@@ -387,8 +486,8 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 	ComPtr<IDXGIFactory4> factory;
 	{
 		UINT dxgiFactoryFlags = 0;
-
-#if defined(_DEBUG)
+//TODO: Add back that this only happens on debug mode.
+//#if defined(_DEBUG) 
 		// Enables debug layer.
 		ComPtr<ID3D12Debug1> debugController;
 		D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)) >> CHK_HR;
@@ -397,7 +496,7 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 
 		// Additional debug layer options.
 		dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-#endif
+//#endif
 
 		CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)) >> CHK_HR;
 	}
@@ -445,8 +544,11 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 
 	// Create command queues.
 	{
-		m_directCommandQueue = CommandQueueHandler(m_device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
-		m_copyCommandQueue = CommandQueueHandler(m_device.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
+		//m_directCommandQueue = CommandQueueHandler(m_device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
+		//m_copyCommandQueue = CommandQueueHandler(m_device.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
+
+		m_directCommandQueue = std::make_unique<CommandQueueHandler>(m_device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
+		m_copyCommandQueue = std::make_unique<CommandQueueHandler>(m_device.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
 	}
 
 	// Create swap chain.
@@ -454,7 +556,7 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 		const DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {
 			.Width = m_width,
 			.Height = m_height,
-			.Format = DXGI_FORMAT_R8G8B8A8_UNORM,
+			.Format = BackBufferFormat,
 			.Stereo = FALSE,
 			.SampleDesc = {
 				.Count = 1,
@@ -470,7 +572,7 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 
 		ComPtr<IDXGISwapChain1> swapChainTemp;
 		factory->CreateSwapChainForHwnd(
-			m_directCommandQueue.Get(), // Implicit synchronization with the command queue.
+			m_directCommandQueue->Get(), // Implicit synchronization with the command queue.
 			m_windowHandle,
 			&swapChainDesc,
 			nullptr,
@@ -485,9 +587,8 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 void DX12Renderer::CreateGBuffers()
 {
 	CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
-	DXGI_FORMAT dxgiFormat = DXGI_FORMAT_UNKNOWN;
 	CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-		dxgiFormat,
+		DXGI_FORMAT_UNKNOWN,
 		m_width,
 		m_height
 	);
@@ -495,8 +596,7 @@ void DX12Renderer::CreateGBuffers()
 
 	// Diffuse gbuffer.
 	{
-		dxgiFormat = GBufferFormats[GBufferDiffuse];
-		resourceDesc.Format = dxgiFormat;
+		resourceDesc.Format = GBufferFormats[GBufferDiffuse];
 
 		m_gBuffers[GBufferDiffuse] = CreateResource(
 			m_device,
@@ -504,12 +604,13 @@ void DX12Renderer::CreateGBuffers()
 			D3D12_RESOURCE_STATE_RENDER_TARGET,
 			D3D12_HEAP_TYPE_DEFAULT
 		);
+
+		NAME_D3D12_OBJECT_MEMBER_INDEXED(m_gBuffers, GBufferDiffuse, DX12Renderer);
 	}
 	
 	// Surface normal gbuffer.
 	{
-		dxgiFormat = GBufferFormats[GBufferNormal];
-		resourceDesc.Format = dxgiFormat;
+		resourceDesc.Format = GBufferFormats[GBufferNormal];
 		
 		m_gBuffers[GBufferNormal] = CreateResource(
 			m_device,
@@ -517,12 +618,13 @@ void DX12Renderer::CreateGBuffers()
 			D3D12_RESOURCE_STATE_RENDER_TARGET,
 			D3D12_HEAP_TYPE_DEFAULT
 		);
+
+		NAME_D3D12_OBJECT_MEMBER_INDEXED(m_gBuffers, GBufferNormal, DX12Renderer);
 	}
 
 	// World position gbuffer.
 	{
-		dxgiFormat = GBufferFormats[GBufferWorldPos];
-		resourceDesc.Format = dxgiFormat;
+		resourceDesc.Format = GBufferFormats[GBufferWorldPos];
 
 		m_gBuffers[GBufferWorldPos] = CreateResource(
 			m_device,
@@ -530,15 +632,38 @@ void DX12Renderer::CreateGBuffers()
 			D3D12_RESOURCE_STATE_RENDER_TARGET,
 			D3D12_HEAP_TYPE_DEFAULT
 		);
+
+		NAME_D3D12_OBJECT_MEMBER_INDEXED(m_gBuffers, GBufferWorldPos, DX12Renderer);
 	}
+
+	
+}
+
+void DX12Renderer::CreateMiddleTexture()
+{
+	CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+		BackBufferFormat,
+		m_width, 
+		m_height
+	);
+	resourceDesc.MipLevels = 1; // Match backbuffer.
+
+	// Render target when writing gbuffer info to it and unordered access in raytracing shader when writing and reading to it.
+	resourceDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+	m_middleTexture = CreateResource(
+		m_device,
+		resourceDesc,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+		D3D12_HEAP_TYPE_DEFAULT
+	);
 }
 
 void DX12Renderer::CreateRTVHeap()
 {
-	constexpr UINT totalRTVs = BufferCount + GBufferCount;
 	const D3D12_DESCRIPTOR_HEAP_DESC rtvDescriptorHeapDesc = {
 			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-			.NumDescriptors = totalRTVs,
+			.NumDescriptors = MaxRTVDescriptors,
 			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
 			.NodeMask = 0
 	};
@@ -553,26 +678,30 @@ void DX12Renderer::CreateRTVs()
 {
 	for (UINT i = 0; i < BufferCount; i++)
 	{
-		m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_renderTargets[i])) >> CHK_HR;
+		m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_backBuffers[i])) >> CHK_HR;
 
 		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-		rtvHandle.Offset(i, m_rtvDescriptorSize);
+		rtvHandle.Offset(RTVOffsets::RTVOffsetBackBuffers + i, m_rtvDescriptorSize);
 
-		m_device->CreateRenderTargetView(m_renderTargets[i].Get(), nullptr, rtvHandle);
+		m_device->CreateRenderTargetView(m_backBuffers[i].Get(), nullptr, rtvHandle);
 
-		NAME_D3D12_OBJECT_MEMBER_INDEXED(m_renderTargets, i, DX12Renderer);
+		NAME_D3D12_OBJECT_MEMBER_INDEXED(m_backBuffers, i, DX12Renderer);
 	}
 
 	for (UINT i = 0; i < GBufferCount; i++)
 	{
-		UINT rtvHandleIndex = i + RTVOffsetGBuffers;
-
 		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-		rtvHandle.Offset(rtvHandleIndex, m_rtvDescriptorSize);
+		rtvHandle.Offset(RTVOffsets::RTVOffsetGBuffers + i, m_rtvDescriptorSize);
 
 		m_device->CreateRenderTargetView(m_gBuffers[i].Get(), nullptr, rtvHandle);
+	}
 
-		NAME_D3D12_OBJECT_MEMBER_INDEXED(m_gBuffers, i, DX12Renderer);
+	// Create middletexture rtv.
+	{
+		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
+		rtvHandle.Offset(RTVOffsets::RTVOffsetMiddleTexture, m_rtvDescriptorSize);
+
+		m_device->CreateRenderTargetView(m_middleTexture.Get(), nullptr, rtvHandle);
 	}
 }
 
@@ -663,7 +792,7 @@ void DX12Renderer::CreateCBVSRVUAVHeap()
 	const D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDescCBVSRVUAV =
 	{
 		.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-		.NumDescriptors = NumCBVSRVUAVDescriptors,
+		.NumDescriptors = MaxCBVSRVUAVDescriptors,
 		.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
 		.NodeMask = 0
 	};
@@ -674,7 +803,7 @@ void DX12Renderer::CreateCBVSRVUAVHeap()
 	NAME_D3D12_OBJECT_MEMBER(m_cbvSrvUavHeap, DX12Renderer);
 }
 
-void DX12Renderer::CreateCBV()
+void DX12Renderer::CreateCBVs()
 {
 	constexpr UINT instanceDataSize = DX12Abstractions::CalculateConstantBufferByteSize(sizeof(InstanceConstants));
 
@@ -699,10 +828,10 @@ void DX12Renderer::CreateCBV()
 	} 
 }
 
-void DX12Renderer::CreateSRV()
+void DX12Renderer::CreateSRVs()
 {
 	// SRVs for gbuffers.
-	for (UINT i = 0; i < GBufferCount; i++)
+	for (UINT i = 0; i < CBVSRVUAVCounts::SRVCountGbuffers; i++)
 	{
 		UINT SRVIndex = i + CBVSRVUAVOffsets::SRVOffsetGBuffers;
 
@@ -712,7 +841,7 @@ void DX12Renderer::CreateSRV()
 		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 		srvDesc.Texture2D = {
 			.MostDetailedMip = 0,
-			.MipLevels = -1u,
+			.MipLevels = (UINT)(-1),
 			.PlaneSlice = 0,
 			.ResourceMinLODClamp = 0.0f
 		};
@@ -722,6 +851,45 @@ void DX12Renderer::CreateSRV()
 
 		m_device->CreateShaderResourceView(m_gBuffers[i].Get(), &srvDesc, gbufferSRVHandle);
 	}
+
+	// SRV for middle texture
+	{
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
+		srvDesc.Format = BackBufferFormat;
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srvDesc.Texture2D = {
+			.MostDetailedMip = 0,
+			.MipLevels = (UINT)(-1),
+			.PlaneSlice = 0,
+			.ResourceMinLODClamp = 0.0f
+		};
+
+		CD3DX12_CPU_DESCRIPTOR_HANDLE gbufferSRVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
+		gbufferSRVHandle.Offset(CBVSRVUAVOffsets::SRVOffsetMiddleTexture, m_cbvSrvUavDescriptorSize);
+
+		m_device->CreateShaderResourceView(m_middleTexture.Get(), &srvDesc, gbufferSRVHandle);
+	}
+}
+
+void DX12Renderer::CreateUAVs()
+{
+	// Uav for middle texture.
+	{
+		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc;
+		uavDesc.Format = BackBufferFormat;
+		uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+		uavDesc.Texture2D = {
+			.MipSlice = 0,
+			.PlaneSlice = 0
+		};
+
+		CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureUAVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
+		middleTextureUAVHandle.Offset(CBVSRVUAVOffsets::UAVOffsetMiddleTexture, m_rtvDescriptorSize);
+
+		m_device->CreateUnorderedAccessView(m_middleTexture.Get(), nullptr, &uavDesc, middleTextureUAVHandle);
+	}
+	
 }
 
 void DX12Renderer::InitAssets()
@@ -735,25 +903,25 @@ void DX12Renderer::InitAssets()
 
 void DX12Renderer::CreateRootSignatures()
 {
-	std::array<CD3DX12_ROOT_PARAMETER, DefaultRootParameterIdx::ParameterCount> rootParameters = {};
+	std::array<CD3DX12_ROOT_PARAMETER, DefaultRootParameterIdx::DefaultRootParameterCount> rootParameters = {};
 	// Default root parameter setup.
 	{
 		// Add a matrix to the root signature where each element is stored as a constant.
 		rootParameters[DefaultRootParameterIdx::MatrixIdx].InitAsConstants(
 			sizeof(dx::XMMATRIX) / 4,
-			ShaderRegisters::CBVRegisters::CBMatrixConstants,
+			RasterShaderRegisters::CBVRegisters::CBMatrixConstants,
 			0,
 			D3D12_SHADER_VISIBILITY_VERTEX
 		);
 
 		// Add descriptor table for instance specific constants.
 		CD3DX12_DESCRIPTOR_RANGE cbvTable;
-		cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, ShaderRegisters::CBVRegisters::CBDescriptorTable);
-		rootParameters[DefaultRootParameterIdx::CBVTableIdx].InitAsDescriptorTable(1, &cbvTable, D3D12_SHADER_VISIBILITY_ALL);
+		cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, RasterShaderRegisters::CBVRegisters::CBDescriptorTable);
+		rootParameters[DefaultRootParameterIdx::CBVTableIdx].InitAsDescriptorTable(1, &cbvTable, D3D12_SHADER_VISIBILITY_VERTEX);
 
 		// Add descriptor table for shader resources.
 		CD3DX12_DESCRIPTOR_RANGE srvTable;
-		srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, GBufferCount, ShaderRegisters::SRVRegisters::SRDescriptorTable);
+		srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, GBufferID::GBufferCount, RasterShaderRegisters::SRVRegisters::SRDescriptorTable);
 		rootParameters[DefaultRootParameterIdx::SRVTableIdx].InitAsDescriptorTable(1, &srvTable, D3D12_SHADER_VISIBILITY_PIXEL);
 	}
 
@@ -769,44 +937,13 @@ void DX12Renderer::CreateRootSignatures()
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
 	);
 
-	ComPtr<ID3DBlob> signature;
-	ComPtr<ID3DBlob> error;
-	{
-		const HRESULT hr = D3D12SerializeRootSignature(
-			&rootSignatureDesc,
-			D3D_ROOT_SIGNATURE_VERSION_1,
-			&signature,
-			&error
-		);
-
-		if (FAILED(hr))
-		{
-			// If there is an error blob, first print out the problem reported from the blob.
-			if (error)
-			{
-				const char* errorBuffer = static_cast<const char*>(error->GetBufferPointer());
-				std::string errorString = std::string("Serialize ERROR: ") + std::string(errorBuffer);
-				OutputDebugStringA(errorString.c_str());
-			}
-
-			// Properly handle the HR value.
-			hr >> CHK_HR;
-		}
-
-		// Create the root sig.
-		m_device->CreateRootSignature(
-			0,
-			signature->GetBufferPointer(),
-			signature->GetBufferSize(),
-			IID_PPV_ARGS(&m_rootSignature)
-		) >> CHK_HR;
-
-		NAME_D3D12_OBJECT_MEMBER(m_rootSignature, DX12Renderer);
-	}
+	SerializeAndCreateRootSig(rootSignatureDesc, m_rasterRootSignature);
+	NAME_D3D12_OBJECT_MEMBER(m_rasterRootSignature, DX12Renderer);
 }
 
 void DX12Renderer::CreatePSOs()
 {
+	// TODO: There only needs to be one structure for explaining pipeline state stream. All entries that are not used "simply" needs to be filled with defaults.
 	struct PipelineStateStream
 	{
 		CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE RootSignature;
@@ -832,31 +969,31 @@ void DX12Renderer::CreatePSOs()
 
 	// Simple rendering pass.
 	{
-		ComPtr<ID3DBlob> vsBlob;
-		D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
-
-		ComPtr<ID3DBlob> psBlob;
-		D3DReadFileToBlob(L"../PixelShader.cso", &psBlob) >> CHK_HR;
-
-		pipelineStateStream.RootSignature = m_rootSignature.Get();
-		pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
-		pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
-		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get()); 
-		pipelineStateStream.DepthStencil = CD3DX12_DEPTH_STENCIL_DESC(CD3DX12_DEFAULT());
-		pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-		pipelineStateStream.RTVFormats = {
-			.RTFormats = { DXGI_FORMAT_R8G8B8A8_UNORM },
-			.NumRenderTargets = 1
-		};
-
-		ComPtr<ID3D12PipelineState> defaultPipelineState;
-		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&defaultPipelineState)) >> CHK_HR;
-
-		NAME_D3D12_OBJECT(defaultPipelineState);
-
-		RegisterRenderPass(NonIndexedPass, defaultPipelineState);
-		RegisterRenderPass(IndexedPass, defaultPipelineState);
+		//ComPtr<ID3DBlob> vsBlob;
+		//D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
+		//
+		//ComPtr<ID3DBlob> psBlob;
+		//D3DReadFileToBlob(L"../PixelShader.cso", &psBlob) >> CHK_HR;
+		//
+		//pipelineStateStream.RootSignature = m_rasterRootSignature.Get();
+		//pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
+		//pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		//pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
+		//pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get()); 
+		//pipelineStateStream.DepthStencil = CD3DX12_DEPTH_STENCIL_DESC(CD3DX12_DEFAULT());
+		//pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+		//pipelineStateStream.RTVFormats = {
+		//	.RTFormats = { BackBufferFormat },
+		//	.NumRenderTargets = 1
+		//};
+		//
+		//ComPtr<ID3D12PipelineState> defaultPipelineState;
+		//m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&defaultPipelineState)) >> CHK_HR;
+		//
+		//NAME_D3D12_OBJECT(defaultPipelineState);
+		//
+		//RegisterRenderPass(NonIndexedPass, defaultPipelineState);
+		//RegisterRenderPass(IndexedPass, defaultPipelineState);
 	}
 	
 
@@ -867,6 +1004,12 @@ void DX12Renderer::CreatePSOs()
 
 		ComPtr<ID3DBlob> psBlob;
 		D3DReadFileToBlob(L"../DeferredPixelShader.cso", &psBlob) >> CHK_HR;
+
+		pipelineStateStream.RootSignature = m_rasterRootSignature.Get();
+		pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
+		pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		pipelineStateStream.DepthStencil = CD3DX12_DEPTH_STENCIL_DESC(CD3DX12_DEFAULT());
+		pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
 		D3D12_RT_FORMAT_ARRAY formatArr;
 		memset(&formatArr, 0, sizeof(formatArr)); // Initialize memory with 0.
@@ -900,6 +1043,7 @@ void DX12Renderer::CreatePSOs()
 		ComPtr<ID3DBlob> psBlob;
 		D3DReadFileToBlob(L"../DeferredLightingPS.cso", &psBlob) >> CHK_HR;
 
+		// TODO: Check if this is even needed. No actual data for input is used as this is a FSQ drawn from the VS.
 		const D3D12_INPUT_ELEMENT_DESC inputLayoutSpecial[] = {
 			{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 		};
@@ -915,12 +1059,12 @@ void DX12Renderer::CreatePSOs()
 			CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
 		} pipelineStateStreamSpecial;
 
-		pipelineStateStreamSpecial.RootSignature = m_rootSignature.Get();
+		pipelineStateStreamSpecial.RootSignature = m_rasterRootSignature.Get();
 		pipelineStateStreamSpecial.InputLayout = { inputLayoutSpecial, (UINT)std::size(inputLayoutSpecial) };
 		pipelineStateStreamSpecial.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
 		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
-		pipelineStateStream.RTVFormats = { { DXGI_FORMAT_R8G8B8A8_UNORM }, 1 };
+		pipelineStateStream.RTVFormats = { { BackBufferFormat }, 1 };
 		pipelineStateStream.DSVFormat = DXGI_FORMAT_UNKNOWN;
 
 		ComPtr<ID3D12PipelineState> deferredLightingPipelineState;
@@ -943,9 +1087,8 @@ void DX12Renderer::CreateRenderObjects()
 		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::Cube);
 		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::OBJModel1);
 
-		//m_renderObjectIDsByRenderPassType[GBufferPass].push_back(RenderObjectID::Cube);
 		m_renderObjectIDsByRenderPassType[DeferredGBufferPass].push_back(RenderObjectID::OBJModel1);
-		m_renderObjectIDsByRenderPassType[DeferredGBufferPass].push_back(RenderObjectID::Cube);
+		//m_renderObjectIDsByRenderPassType[DeferredGBufferPass].push_back(RenderObjectID::Cube);
 	}
 	
 	// Create render objects.
@@ -971,7 +1114,7 @@ void DX12Renderer::CreateRenderObjects()
 		//	{ {  1.0f, -1.0f,  1.0f }, { 1.0f, 0.0f, 1.0f } }  // 7
 		//} };
 		//
-		//std::vector<uint32_t> cubeIndices = {
+		//std::vector<VertexIndex> cubeIndices = {
 		//		0, 1, 2, 0, 2, 3, // front face
 		//		4, 6, 5, 4, 7, 6, // back face
 		//		4, 5, 1, 4, 1, 0, // left face
@@ -1041,24 +1184,21 @@ void DX12Renderer::CreateRenderInstances()
 
 		RenderInstance renderInstance = {};
 
-		renderInstance.CBIndex = renderInstanceCount++;
-		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(3.0f, 3.0f, 0.0f));
-		renderInstances.push_back(renderInstance);
+		//UINT offset = 2;
+		//for (int x = 0; x < 5; x++)
+		//{
+		//	for (int y = 0; y < 5; y++)
+		//	{
+		//		int xPos = (x - offset) * 3;
+		//		int yPos = (y - offset) * 3;
+		//		renderInstance.CBIndex = renderInstanceCount++;
+		//		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(xPos, yPos, 0.0f));
+		//		renderInstances.push_back(renderInstance);
+		//	}
+		//}
 
 		renderInstance.CBIndex = renderInstanceCount++;
-		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-3.0f, 3.0f, 0.0f));
-		renderInstances.push_back(renderInstance);
-
-		renderInstance.CBIndex = renderInstanceCount++;
-		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(-6.0f, 3.0f, 0.0f));
-		renderInstances.push_back(renderInstance);
-
-		renderInstance.CBIndex = renderInstanceCount++;
-		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixRotationX(dx::XM_PIDIV2 * 0.34f) * dx::XMMatrixTranslation(6.0f, 3.0f, 0.0f));
-		renderInstances.push_back(renderInstance);
-
-		renderInstance.CBIndex = renderInstanceCount++;
-		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(0.0f, 3.0f, 0.0f));
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(0.0f, 0.0f, -5.0f));
 		renderInstances.push_back(renderInstance);
 	}
 
@@ -1068,10 +1208,632 @@ void DX12Renderer::CreateRenderInstances()
 
 		RenderInstance renderInstance = {};
 
-		renderInstance.CBIndex = renderInstanceCount++;
-		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixRotationX(dx::XM_PIDIV2 * 0.34f) * dx::XMMatrixTranslation(0.0f, 0.0f, 0.0f));
-		renderInstances.push_back(renderInstance);
+		//renderInstance.CBIndex = renderInstanceCount++;
+		//dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixRotationX(dx::XM_PIDIV2 * 0.34f) * dx::XMMatrixTranslation(0.0f, 0.0f, 0.0f));
+		//renderInstances.push_back(renderInstance);
+
+		int offset = 2;
+		float scale = 5.f;
+
+
+		for (int x = 0; x < 5; x++)
+		{
+			for (int y = 0; y < 5; y++)
+			{
+				
+				float xPos = (x - offset) * scale;
+				float yPos = (y - offset) * scale;
+				renderInstance.CBIndex = renderInstanceCount++;
+				dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(xPos, yPos, 0.0f));
+				renderInstances.push_back(renderInstance);
+			}
+		}
+
+		for (int x = 0; x < 5; x++)
+		{
+			for (int y = 0; y < 5; y++)
+			{
+				float xPos = (x - offset) * scale;
+				float yPos = (y - offset) * scale;
+				renderInstance.CBIndex = renderInstanceCount++;
+				dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(xPos, yPos, -5.0f));
+				renderInstances.push_back(renderInstance);
+			}
+		}
 	}
+}
+
+void DX12Renderer::InitRaytracing()
+{
+	CreateAccelerationStructures();
+	CreateRaytracingPipelineState();
+	CreateShaderTables();
+	CreateTopLevelASDescriptors();
+
+	// Wait for all work to be done.
+	m_directCommandQueue->SignalAndWait();
+}
+
+void DX12Renderer::CreateAccelerationStructures()
+{
+	m_directCommandQueue->ResetAllocator();
+	auto commandList = m_directCommandQueue->CreateCommandList(m_device);
+
+	CreateBottomLevelASs(commandList);
+	CreateTopLevelASs(commandList);
+
+	commandList->Close();
+
+	DX12Abstractions::CommandListVector commandLists = { commandList };
+	m_directCommandQueue->ExecuteCommandLists(commandLists);
+
+	m_directCommandQueue->SignalAndWait();
+}
+
+void DX12Renderer::CreateBottomLevelASs(ComPtr<ID3D12GraphicsCommandList4> commandList)
+{
+	// Cube
+	{
+		RenderObjectID objectID = RenderObjectID::Cube;
+		CreateBottomLevelAccelerationStructure(objectID, commandList);
+	}
+
+	// OBJ Model
+	{
+		RenderObjectID objectID = RenderObjectID::OBJModel1;
+		CreateBottomLevelAccelerationStructure(objectID, commandList);
+	}
+}
+
+void DX12Renderer::CreateBottomLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList)
+{
+	RenderObject& renderObject = m_renderObjectsByID[objectID];
+
+	D3D12_RAYTRACING_GEOMETRY_DESC geomDesc[1] = {};
+	geomDesc[0].Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+	geomDesc[0].Triangles.VertexBuffer.StartAddress = renderObject.vertexBuffer.resource->GetGPUVirtualAddress();
+	geomDesc[0].Triangles.VertexBuffer.StrideInBytes = renderObject.vertexBufferView.StrideInBytes;
+	geomDesc[0].Triangles.VertexCount = renderObject.vertexBufferView.SizeInBytes / renderObject.vertexBufferView.StrideInBytes;
+	geomDesc[0].Triangles.VertexFormat = Vertex::sVertexFormat;
+	geomDesc[0].Triangles.IndexBuffer = renderObject.indexBuffer.resource->GetGPUVirtualAddress();
+	geomDesc[0].Triangles.IndexCount = renderObject.indexBufferView.SizeInBytes / sizeof(VertexIndex);
+	geomDesc[0].Triangles.IndexFormat = renderObject.indexBufferView.Format;
+	geomDesc[0].Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+
+	// Get the size requirements for the scratch and AS buffers
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+	inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+	inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+	inputs.NumDescs = ARRAYSIZE(geomDesc);
+	inputs.pGeometryDescs = geomDesc;
+	inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+
+	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+	m_device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+
+	AccelerationStructureBuffers& bottomLevelAccStruct = m_bottomAccStructByID[objectID];
+
+	// Create scratch resource.
+	{
+		CD3DX12_RESOURCE_DESC bottomScratchResourceDesc = CD3DX12_RESOURCE_DESC::Buffer(
+			info.ScratchDataSizeInBytes,
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+		);
+
+		bottomLevelAccStruct.scratch = CreateResource(
+			m_device,
+			bottomScratchResourceDesc,
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+			D3D12_HEAP_TYPE_DEFAULT
+		);
+	}
+
+	// Create result resource.
+	{
+		CD3DX12_RESOURCE_DESC bottomResultResourceDesc = CD3DX12_RESOURCE_DESC::Buffer(
+			info.ResultDataMaxSizeInBytes,
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+		);
+
+		bottomLevelAccStruct.result = CreateResource(
+			m_device,
+			bottomResultResourceDesc,
+			D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+			D3D12_HEAP_TYPE_DEFAULT
+		);
+	}
+
+	// Create the bottom-level AS
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC asDesc = {};
+	asDesc.Inputs = inputs;
+	asDesc.DestAccelerationStructureData = bottomLevelAccStruct.result.resource->GetGPUVirtualAddress();
+	asDesc.ScratchAccelerationStructureData = bottomLevelAccStruct.scratch.resource->GetGPUVirtualAddress();
+
+	commandList->BuildRaytracingAccelerationStructure(&asDesc, 0, nullptr);
+}
+
+void DX12Renderer::CreateTopLevelASs(ComPtr<ID3D12GraphicsCommandList4> commandList)
+{
+	// Cube
+	{
+		RenderObjectID objectID = RenderObjectID::Cube;
+		CreateTopLevelAccelerationStructure(objectID, commandList);
+	}
+
+	// OBJ Model
+	{
+		RenderObjectID objectID = RenderObjectID::OBJModel1;
+		CreateTopLevelAccelerationStructure(objectID, commandList);
+	}
+}
+
+void DX12Renderer::CreateTopLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList)
+{
+	AccelerationStructureBuffers& bottomAccStruct = m_bottomAccStructByID[objectID];
+
+	// First, get the size of the TLAS buffers and create them
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+	inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+	inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+	inputs.NumDescs = (UINT)m_renderInstancesByID[objectID].size();
+	inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+
+	AccelerationStructureBuffers& topAccStruct = m_topAccStructByID[objectID];
+
+	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info;
+	m_device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+
+	CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(info.ScratchDataSizeInBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+	topAccStruct.scratch = CreateResource(
+		m_device,
+		resourceDesc,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+		D3D12_HEAP_TYPE_DEFAULT
+	);
+
+	resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(info.ResultDataMaxSizeInBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+	topAccStruct.result = CreateResource(
+		m_device,
+		resourceDesc,
+		D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+		D3D12_HEAP_TYPE_DEFAULT
+	);
+
+	resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * inputs.NumDescs);
+	topAccStruct.instanceDesc = CreateUploadResource(m_device, resourceDesc);
+
+	UpdateTopLevelAccelerationStructure(objectID, commandList);
+}
+
+void DX12Renderer::CreateRaytracingPipelineState()
+{
+	constexpr UINT MaxSubObjects = 100u;
+	std::array<D3D12_STATE_SUBOBJECT, 100u> soMemory{};
+	UINT totalSubobjects = 0u;
+
+	auto GetNextSubObject = [&]()
+	{
+		return &soMemory[totalSubobjects++];
+	};
+
+	ComPtr<ID3DBlob> rtShaderBlob;
+	D3D12_DXIL_LIBRARY_DESC dxilLibraryDesc;
+	// Shader exports.
+	std::array<D3D12_EXPORT_DESC, 3> dxilExports = { {
+		{ RayGenShaderName, nullptr, D3D12_EXPORT_FLAG_NONE },
+		{ AnyHitShaderName, nullptr, D3D12_EXPORT_FLAG_NONE },
+		{ MissShaderName, nullptr, D3D12_EXPORT_FLAG_NONE }
+	} };
+	{
+		D3DReadFileToBlob(L"../RTShader.dxil", &rtShaderBlob) >> CHK_HR;
+		CD3DX12_SHADER_BYTECODE anyHitBytecode(rtShaderBlob.Get());
+
+		
+		dxilLibraryDesc.DXILLibrary = anyHitBytecode;
+		dxilLibraryDesc.pExports = dxilExports.data();
+		dxilLibraryDesc.NumExports = (UINT)dxilExports.size();
+
+		D3D12_STATE_SUBOBJECT* so = GetNextSubObject();
+		so->Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
+		so->pDesc = &dxilLibraryDesc;
+	}
+
+	// Init hit group.
+	D3D12_HIT_GROUP_DESC hitGroupDesc;
+	{
+		hitGroupDesc.HitGroupExport = HitGroupName;
+
+		hitGroupDesc.AnyHitShaderImport = AnyHitShaderName;
+		hitGroupDesc.ClosestHitShaderImport = nullptr;
+		hitGroupDesc.IntersectionShaderImport = nullptr;
+		hitGroupDesc.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
+
+		D3D12_STATE_SUBOBJECT* so = GetNextSubObject();
+		so->Type = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
+		so->pDesc = &hitGroupDesc;
+	}
+
+	// Init raygen local root signature and bind to raygen shader.
+	ComPtr<ID3D12RootSignature> rayGenLocalRootSig;
+	D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION rayGenLocalRootAssociation;
+	std::array<LPCWSTR, 1> rayGenShaderNames = { RayGenShaderName };
+	{
+		CreateRayGenLocalRootSignature(rayGenLocalRootSig);
+		D3D12_STATE_SUBOBJECT* soRayGenLocalRootSig = GetNextSubObject();
+		soRayGenLocalRootSig->Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
+		soRayGenLocalRootSig->pDesc = rayGenLocalRootSig.GetAddressOf();
+
+		// Bind to shader.
+		{
+			rayGenLocalRootAssociation.pExports = rayGenShaderNames.data();
+			rayGenLocalRootAssociation.NumExports = (UINT)rayGenShaderNames.size();
+			rayGenLocalRootAssociation.pSubobjectToAssociate = soRayGenLocalRootSig;
+
+			D3D12_STATE_SUBOBJECT* so = GetNextSubObject();
+			so->Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
+			so->pDesc = &rayGenLocalRootAssociation;
+		}
+	}
+
+	
+	// Init hit group local root signature and bind to hit group shaders.
+	ComPtr<ID3D12RootSignature> hitGroupLocalRootSig;
+	D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION hitGroupLocalRootAssociation;
+	std::array<LPCWSTR, 1> hitGroupShaderNames = { AnyHitShaderName };
+	{
+		CreateHitGroupLocalRootSignature(hitGroupLocalRootSig);
+		D3D12_STATE_SUBOBJECT* soHitGroupLocalRootSig = GetNextSubObject();
+		soHitGroupLocalRootSig->Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
+		soHitGroupLocalRootSig->pDesc = hitGroupLocalRootSig.GetAddressOf();
+
+		// Bind to shader.
+		{
+			hitGroupLocalRootAssociation.pExports = hitGroupShaderNames.data();
+			hitGroupLocalRootAssociation.NumExports = (UINT)hitGroupShaderNames.size();
+			hitGroupLocalRootAssociation.pSubobjectToAssociate = soHitGroupLocalRootSig;
+
+			D3D12_STATE_SUBOBJECT* so = GetNextSubObject();
+			so->Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
+			so->pDesc = &hitGroupLocalRootAssociation;
+		}
+	}
+
+	// Init miss local root signature and bind to miss shaders
+	ComPtr<ID3D12RootSignature> missLocalRootSig;
+	D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION missLocalRootAssociation;
+	std::array<LPCWSTR, 1> missShaderNames = { MissShaderName };
+	{
+		CreateMissLocalRootSignature(missLocalRootSig);
+		D3D12_STATE_SUBOBJECT* soMissLocalRootSig = GetNextSubObject();
+		soMissLocalRootSig->Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
+		soMissLocalRootSig->pDesc = missLocalRootSig.GetAddressOf();
+
+		// Bind to shader.
+		{
+			missLocalRootAssociation.pExports = missShaderNames.data();
+			missLocalRootAssociation.NumExports = (UINT)missShaderNames.size();
+			missLocalRootAssociation.pSubobjectToAssociate = soMissLocalRootSig;
+
+			D3D12_STATE_SUBOBJECT* so = GetNextSubObject();
+			so->Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
+			so->pDesc = &missLocalRootAssociation;
+		}
+	}
+
+	// Init shader config and bind it to programs.
+	D3D12_RAYTRACING_SHADER_CONFIG shaderConfig = {};
+	D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION shaderConfigAssociation;
+	std::array<LPCWSTR, 3> shaderNamesForConfig = { MissShaderName, AnyHitShaderName, RayGenShaderName };
+	{
+		// TODO: Make this match shader.
+		shaderConfig.MaxAttributeSizeInBytes = sizeof(float) * 2;
+		shaderConfig.MaxPayloadSizeInBytes = sizeof(float) * 1;
+
+		D3D12_STATE_SUBOBJECT* soShaderConfig = GetNextSubObject();
+		soShaderConfig->Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG;
+		soShaderConfig->pDesc = &shaderConfig;
+		
+		//Bind the payload size to the programs
+		{
+			// TODO: Check if it needs to be const pointers inside of array.	
+			shaderConfigAssociation.pExports = shaderNamesForConfig.data();
+			shaderConfigAssociation.NumExports = (UINT)shaderNamesForConfig.size();
+			shaderConfigAssociation.pSubobjectToAssociate = soShaderConfig;
+
+			D3D12_STATE_SUBOBJECT* soShaderConfigAssociation = GetNextSubObject();
+			soShaderConfigAssociation->Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
+			soShaderConfigAssociation->pDesc = &shaderConfigAssociation;
+		}
+		
+	}
+
+	// Init pipeline config
+	D3D12_RAYTRACING_PIPELINE_CONFIG pipelineConfig;
+	{
+		pipelineConfig.MaxTraceRecursionDepth = 1;
+
+		D3D12_STATE_SUBOBJECT* so = GetNextSubObject();
+		so->Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG;
+		so->pDesc = &pipelineConfig;
+	}
+
+	// Create the global root sig and save it.
+	{
+		CreateGlobalRootSignature(m_RTGlobalRootSignature);
+
+		D3D12_STATE_SUBOBJECT* so = GetNextSubObject();
+		so->Type = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
+		so->pDesc = m_RTGlobalRootSignature.GetAddressOf();
+	}
+
+	// Create the final state.
+	D3D12_STATE_OBJECT_DESC desc;
+	desc.NumSubobjects = totalSubobjects;
+	desc.pSubobjects = soMemory.data();
+	desc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
+
+	m_device->CreateStateObject(&desc, IID_PPV_ARGS(&m_RTPipelineState)) >> CHK_HR;
+
+	// TODO: Make this a more correct way of registering passes.
+	RegisterRenderPass(RaytracedAOPass, nullptr);
+}
+
+
+void DX12Renderer::CreateRayGenLocalRootSignature(ComPtr<ID3D12RootSignature>& rootSig)
+{
+	std::array<CD3DX12_ROOT_PARAMETER, RTRayGenParameterIdx::RTRayGenParameterCount> rootParameters = {};
+	CD3DX12_DESCRIPTOR_RANGE srvRangeGbuffers;
+	CD3DX12_DESCRIPTOR_RANGE srvRangeTLAS;
+	CD3DX12_DESCRIPTOR_RANGE uavRange;
+	{
+		// Add root descriptor table for TLAS shader resource.
+		srvRangeTLAS.Init(
+			D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+			CBVSRVUAVCounts::SRVCountTLAS,
+			RTShaderRegisters::SRVRegistersRayGen::SRVDescriptorTableTLASRegister
+		);
+		rootParameters[RTRayGenParameterIdx::RayGenSRVTableTLASIdx].InitAsDescriptorTable(1, &srvRangeTLAS, D3D12_SHADER_VISIBILITY_ALL);
+		
+		// Add root descriptor table for shader resources (gbuffers).
+		srvRangeGbuffers.Init(
+			D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+			CBVSRVUAVCounts::SRVCountGbuffers,
+			RTShaderRegisters::SRVRegistersRayGen::SRVDescriptorTableGbuffersRegister
+		);
+		rootParameters[RTRayGenParameterIdx::RayGenSRVTableGbuffersIdx].InitAsDescriptorTable(1, &srvRangeGbuffers, D3D12_SHADER_VISIBILITY_ALL);
+
+		// Add root descriptor for UAV that is going to be written to.
+		uavRange.Init(
+			D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 
+			CBVSRVUAVCounts::SRVCountMiddleTexture, 
+			RTShaderRegisters::UAVRegistersRayGen::UAVDescriptorRegister
+		);
+		rootParameters[RTRayGenParameterIdx::RayGenUAVTableIdx].InitAsDescriptorTable(1, &uavRange, D3D12_SHADER_VISIBILITY_ALL);
+	}
+
+	// Create the desc
+	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+	rootSignatureDesc.Init(
+		(UINT)rootParameters.size(),
+		rootParameters.data(),
+		0,
+		nullptr,
+		D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE
+	);
+
+	SerializeAndCreateRootSig(rootSignatureDesc, rootSig);
+}
+
+void DX12Renderer::CreateHitGroupLocalRootSignature(ComPtr<ID3D12RootSignature>& rootSig)
+{
+	// Empty root sig because we don't need any local data if we hit.
+	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+	rootSignatureDesc.Init(0, nullptr);
+	rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
+
+	SerializeAndCreateRootSig(rootSignatureDesc, rootSig);
+}
+
+void DX12Renderer::CreateMissLocalRootSignature(ComPtr<ID3D12RootSignature>& rootSig)
+{
+	// Empty root sig because we don't need any local data if we miss.
+	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+	rootSignatureDesc.Init(0, nullptr);
+	rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
+
+	SerializeAndCreateRootSig(rootSignatureDesc, rootSig);
+}
+
+void DX12Renderer::CreateGlobalRootSignature(ComPtr<ID3D12RootSignature>& rootSig)
+{
+	std::array<CD3DX12_ROOT_PARAMETER, RTGlobalParameterIdx::RTGlobalParameterCount> rootParameters = {};
+	{
+		rootParameters[RTGlobalParameterIdx::Global32BitConstantIdx].InitAsConstants(
+			1,
+			RTShaderRegisters::ConstantRegistersGlobal::ConstantRegister
+		);
+	}
+
+	// No flag needed for global root sig.
+	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+	rootSignatureDesc.Init(
+		rootParameters.size(),
+		rootParameters.data()
+	);
+
+	SerializeAndCreateRootSig(rootSignatureDesc, rootSig);
+}
+
+void DX12Renderer::CreateShaderTables()
+{
+	ComPtr<ID3D12StateObjectProperties> RTStateObjectProps = nullptr;
+	m_RTPipelineState->QueryInterface(IID_PPV_ARGS(&RTStateObjectProps)) >> CHK_HR;
+
+	// Raygen table.
+	{
+		// Shader record 1.
+		struct alignas(D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT) RAY_GEN_SHADER_TABLE_DATA
+		{
+			unsigned char ShaderIdentifier[D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES];
+			UINT64 SRVDescriptorTableTopLevelAS;
+			UINT64 SRVDescriptorTableGbuffers;
+			UINT64 UAVDescriptorTableMiddleTexture;
+		} tableData;
+
+		// Set the descriptor table start for middle texture.
+		{
+			CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(m_cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
+			uavHandle.Offset(CBVSRVUAVOffsets::UAVOffsetMiddleTexture, m_cbvSrvUavDescriptorSize);
+		
+			tableData.UAVDescriptorTableMiddleTexture = uavHandle.ptr;
+		}
+
+		// Set TLAS SRV.
+		{
+			CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(m_cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
+			srvHandle.Offset(CBVSRVUAVOffsets::SRVOffsetTLAS, m_cbvSrvUavDescriptorSize);
+
+			tableData.SRVDescriptorTableTopLevelAS = srvHandle.ptr;
+		}
+		
+		// Set descriptor table for gbuffer start.
+		{
+			auto descHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(m_cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
+			descHeapHandle.Offset(CBVSRVUAVOffsets::SRVOffsetGBuffers, m_cbvSrvUavDescriptorSize);
+
+			tableData.SRVDescriptorTableGbuffers = descHeapHandle.ptr;
+		}
+
+		void* dest = tableData.ShaderIdentifier;
+		void* src = RTStateObjectProps->GetShaderIdentifier(RayGenShaderName);
+		memcpy(dest, src, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+
+		union MaxSizeStruct
+		{
+			RAY_GEN_SHADER_TABLE_DATA tabledata0;
+		};
+
+		m_rayGenShaderTable.strideInBytes = sizeof(MaxSizeStruct);
+		m_rayGenShaderTable.sizeInBytes = m_rayGenShaderTable.strideInBytes * 1; // A single ray gen table for now.
+		{
+			CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(m_rayGenShaderTable.sizeInBytes);
+			m_rayGenShaderTable.tableResource = CreateUploadResource(
+				m_device,
+				resourceDesc
+			);
+		}
+
+		MapDataToBuffer(m_rayGenShaderTable.tableResource, &tableData, sizeof(tableData));
+	}
+
+	// Miss table.
+	{
+		struct alignas(D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT) MISS_SHADER_TABLE_DATA
+		{
+			unsigned char ShaderIdentifier[D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES];
+		} tableData;
+
+		void* dest = tableData.ShaderIdentifier;
+		void* src = RTStateObjectProps->GetShaderIdentifier(MissShaderName);
+		memcpy(dest, src, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+
+		union MaxSizeStruct
+		{
+			MISS_SHADER_TABLE_DATA tabledata0;
+		};
+
+		m_missShaderTable.strideInBytes = sizeof(MaxSizeStruct);
+		m_missShaderTable.sizeInBytes = m_missShaderTable.strideInBytes * 1; // A single miss table for now.
+		{
+			CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(m_missShaderTable.sizeInBytes);
+			m_missShaderTable.tableResource = CreateUploadResource(
+				m_device,
+				resourceDesc
+			);
+		}
+
+		MapDataToBuffer(m_missShaderTable.tableResource, &tableData, sizeof(tableData));
+	}
+
+	// Hit program table.
+	{
+		struct alignas(D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT) HIT_GROUP_SHADER_TABLE_DATA
+		{
+			unsigned char ShaderIdentifier[D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES];
+		} tableData;
+
+		void* dest = tableData.ShaderIdentifier;
+		void* src = RTStateObjectProps->GetShaderIdentifier(HitGroupName);
+		memcpy(dest, src, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+
+		union MaxSizeStruct
+		{
+			HIT_GROUP_SHADER_TABLE_DATA tabledata0;
+		};
+
+		m_hitGroupShaderTable.strideInBytes = sizeof(MaxSizeStruct);
+		m_hitGroupShaderTable.sizeInBytes = m_hitGroupShaderTable.strideInBytes * 1; // A single hit group for now.
+		{
+			CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(m_hitGroupShaderTable.sizeInBytes);
+			m_hitGroupShaderTable.tableResource = CreateUploadResource(
+				m_device,
+				resourceDesc
+			);
+		}
+
+		MapDataToBuffer(m_hitGroupShaderTable.tableResource, &tableData, sizeof(tableData));
+	}
+}
+
+void DX12Renderer::CreateTopLevelASDescriptors()
+{
+	// SRV for TLAC
+	{
+		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		srvDesc.RaytracingAccelerationStructure.Location = m_topAccStructByID[RenderObjectID::OBJModel1].result.resource->GetGPUVirtualAddress();
+
+		CD3DX12_CPU_DESCRIPTOR_HANDLE tlasSRVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
+		tlasSRVHandle.Offset(CBVSRVUAVOffsets::SRVOffsetTLAS, m_cbvSrvUavDescriptorSize);
+
+		// Use nullptr because the resource is already referenced in description of the view.
+		m_device->CreateShaderResourceView(nullptr, &srvDesc, tlasSRVHandle);
+	}
+}
+
+void DX12Renderer::SerializeAndCreateRootSig(CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc, ComPtr<ID3D12RootSignature>& rootSig)
+{
+	ComPtr<ID3DBlob> signature = nullptr;
+	ComPtr<ID3DBlob> error = nullptr;
+
+	const HRESULT hr = D3D12SerializeRootSignature(
+		&rootSignatureDesc,
+		D3D_ROOT_SIGNATURE_VERSION_1,
+		&signature,
+		&error
+	);
+
+	if (FAILED(hr))
+	{
+		// If there is an error blob, first print out the problem reported from the blob.
+		if (error)
+		{
+			const char* errorBuffer = static_cast<const char*>(error->GetBufferPointer());
+			std::string errorString = std::string("Serialize ERROR: ") + std::string(errorBuffer);
+			OutputDebugStringA(errorString.c_str());
+		}
+
+		// Properly handle the HR value.
+		hr >> CHK_HR;
+	}
+
+	m_device->CreateRootSignature(
+		0,
+		signature->GetBufferPointer(),
+		signature->GetBufferSize(),
+		IID_PPV_ARGS(&rootSig)
+	) >> CHK_HR;
 }
 
 void DX12Renderer::UpdateInstanceConstantBuffers()
@@ -1096,7 +1858,57 @@ void DX12Renderer::UpdateInstanceConstantBuffers()
 	m_perInstanceCB.resource->Unmap(0, nullptr);
 }
 
+void DX12Renderer::UpdateTopLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList)
+{
+	AccelerationStructureBuffers& topAccStruct = m_topAccStructByID[objectID];
+	const D3D12_GPU_VIRTUAL_ADDRESS bottomLevelAddress = m_bottomAccStructByID[objectID].result.resource->GetGPUVirtualAddress();
+	const UINT instanceCount = (UINT)m_renderInstancesByID[objectID].size();
+
+	D3D12_RAYTRACING_INSTANCE_DESC* instanceDesc = nullptr;
+	topAccStruct.instanceDesc.resource->Map(0, nullptr, reinterpret_cast<void**>(&instanceDesc)) >> CHK_HR;
+
+	for (UINT i = 0; i < instanceCount; i++)
+	{
+		const RenderInstance& renderInstance = m_renderInstancesByID[objectID][i];
+		instanceDesc->InstanceID = i;
+		instanceDesc->InstanceContributionToHitGroupIndex = 0;
+		instanceDesc->Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+
+		dx::XMFLOAT3X4 transfM;
+		dx::XMStoreFloat3x4(&transfM, dx::XMLoadFloat4x4(&renderInstance.instanceData.modelMatrix));
+		memcpy(instanceDesc->Transform, &transfM, sizeof(instanceDesc->Transform));
+
+		instanceDesc->AccelerationStructure = bottomLevelAddress;
+		instanceDesc->InstanceMask = 0xFF; // TODO: Check if this is even needed?
+
+		instanceDesc++;
+	}
+
+	topAccStruct.instanceDesc.resource->Unmap(0, nullptr);
+
+	// TODO: Make this input shared between the initial creation and now.
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+	inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+	inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+	inputs.NumDescs = instanceCount;
+	inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+	
+	// Create the TLAS
+	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC asDesc = {};
+	asDesc.Inputs = inputs;
+	asDesc.Inputs.InstanceDescs = topAccStruct.instanceDesc.resource->GetGPUVirtualAddress();
+	asDesc.DestAccelerationStructureData = topAccStruct.result.resource->GetGPUVirtualAddress();
+	asDesc.ScratchAccelerationStructureData = topAccStruct.scratch.resource->GetGPUVirtualAddress();
+
+	commandList->BuildRaytracingAccelerationStructure(&asDesc, 0, nullptr);
+
+	// UAV barrier needed before using the acceleration structures in a raytracing operation
+	CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(topAccStruct.result.Get());
+	commandList->ResourceBarrier(1, &uavBarrier);
+}
+
 // Macro for reducing code duplication in render pass registration.
+// What this macro does is adds it to the render pass map and also registers it for the sync handler.
 #define CaseRegisterRenderPass(renderpasstype, renderclass) \
 case renderpasstype: \
 	m_renderPasses[renderpasstype] = std::make_unique<renderclass>(m_device.Get(), pipelineState); \
@@ -1115,6 +1927,8 @@ void DX12Renderer::RegisterRenderPass(const RenderPassType renderPassType, ComPt
 
 		CaseRegisterRenderPass(DeferredLightingPass, DeferredLightingRenderPass);
 
+		CaseRegisterRenderPass(RaytracedAOPass, RaytracedAORenderPass);
+
 	default:
 		// TODO: Handle this error better.
 		assert(false);
@@ -1130,7 +1944,7 @@ void DX12Renderer::ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList)
 		// Get RTV handle for GBuffer.
 		const CD3DX12_CPU_DESCRIPTOR_HANDLE gBufferRTVHandle(
 			m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
-			RTVOffsetGBuffers + i,
+			RTVOffsets::RTVOffsetGBuffers + i,
 			m_rtvDescriptorSize
 		);
 
@@ -1138,20 +1952,18 @@ void DX12Renderer::ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList)
 	}
 }
 
-RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<uint32_t>* indices, D3D12_PRIMITIVE_TOPOLOGY topology)
+RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<VertexIndex>* indices, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
 	RenderObject renderObject;
 
 	// Temp command list for setting up render objects.
 	// Using command list '1' closes the command list immediately and 
 	// doesn't require a command allocator as input, which usually is replaced either way.
-	ComPtr<ID3D12GraphicsCommandList1> copyCommandList = m_copyCommandQueue.CreateCommandList(m_device);
-	m_copyCommandQueue.ResetAllocator();
-	m_copyCommandQueue.ResetCommandList(copyCommandList);
+	m_copyCommandQueue->ResetAllocator();
+	ComPtr<ID3D12GraphicsCommandList1> copyCommandList = m_copyCommandQueue->CreateCommandList(m_device);
 
-	ComPtr<ID3D12GraphicsCommandList1> directCommandList = m_directCommandQueue.CreateCommandList(m_device);
-	m_directCommandQueue.ResetAllocator();
-	m_directCommandQueue.ResetCommandList(directCommandList);
+	m_directCommandQueue->ResetAllocator();
+	ComPtr<ID3D12GraphicsCommandList1> directCommandList = m_directCommandQueue->CreateCommandList(m_device);
 
 	UINT vertexCount = 0;
 	GPUResource vertexUploadBuffer;
@@ -1189,7 +2001,7 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 		UINT indexSize = sizeof(indices->at(0));
 		UINT indexBufferSize = indexSize * indexCount;
 
-		UploadResource<uint32_t>(
+		UploadResource<VertexIndex>(
 			m_device,
 			copyCommandList,
 			renderObject.indexBuffer,
@@ -1202,7 +2014,7 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 		auto& ibView = renderObject.indexBufferView;
 		{
 			ibView.BufferLocation = renderObject.indexBuffer.resource->GetGPUVirtualAddress();
-			ibView.Format = GetDXGIFormat<uint32_t>();
+			ibView.Format = GetDXGIFormat<VertexIndex>();
 			ibView.SizeInBytes = indexBufferSize;
 		}
 
@@ -1216,17 +2028,17 @@ RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertice
 	// Execute copy commands.
 	{
 		std::array<ID3D12CommandList* const, 1> commandLists = { copyCommandList.Get() };
-		m_copyCommandQueue.commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
+		m_copyCommandQueue->commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
 
-		m_copyCommandQueue.SignalAndWait(nullptr);
+		m_copyCommandQueue->SignalAndWait();
 	}
 	
 	// Execute direct commands.
 	{
 		std::array<ID3D12CommandList* const, 1> directCommandLists = { directCommandList.Get() };
-		m_directCommandQueue.commandQueue->ExecuteCommandLists((UINT)directCommandLists.size(), directCommandLists.data());
+		m_directCommandQueue->commandQueue->ExecuteCommandLists((UINT)directCommandLists.size(), directCommandLists.data());
 
-		m_directCommandQueue.SignalAndWait(nullptr);
+		m_directCommandQueue->SignalAndWait();
 	}
 
 	// Add to render objects.
@@ -1255,7 +2067,7 @@ RenderObject DX12Renderer::CreateRenderObjectFromOBJ(const std::string& objPath,
 	auto& shapes = reader.GetShapes();
 	auto& materials = reader.GetMaterials();
 
-	std::vector<uint32_t> indices;
+	std::vector<VertexIndex> indices;
 	GetObjVertexIndices(indices, reader);
 
 	std::vector<Vertex> vertices;
@@ -1300,7 +2112,7 @@ RenderObject DX12Renderer::CreateRenderObjectFromOBJ(const std::string& objPath,
 }
 
 CommandQueueHandler::CommandQueueHandler(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE type)
-	: m_type(type), m_fenceValue(0)
+	: m_fence(nullptr), m_eventHandle(CreateEvent(nullptr, false, false, nullptr)), m_fenceValue(0), m_type(type)
 {
 	D3D12_COMMAND_QUEUE_DESC queueDesc = {
 		.Type = m_type,
@@ -1321,15 +2133,31 @@ CommandQueueHandler::CommandQueueHandler(ComPtr<ID3D12Device5> device, D3D12_COM
 	NAME_D3D12_OBJECT_MEMBER(m_fence, DX12Renderer);
 }
 
-ComPtr<ID3D12GraphicsCommandList1> CommandQueueHandler::CreateCommandList(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_FLAGS flags /*= D3D12_COMMAND_LIST_FLAG_NONE*/)
+CommandQueueHandler::CommandQueueHandler()
+	: m_fence(nullptr), m_eventHandle(nullptr), m_fenceValue((UINT64)(-1)), m_type(D3D12_COMMAND_LIST_TYPE_NONE)
 {
-	ComPtr<ID3D12GraphicsCommandList1> commandList;
+	// Do nothing but set defaults.
+}
+
+CommandQueueHandler::~CommandQueueHandler()
+{
+	if(m_eventHandle)
+		CloseHandle(m_eventHandle);
+}
+
+ComPtr<ID3D12GraphicsCommandList4> CommandQueueHandler::CreateCommandList(ComPtr<ID3D12Device5> device, bool autoReset /*= true*/, D3D12_COMMAND_LIST_FLAGS flags /*= D3D12_COMMAND_LIST_FLAG_NONE*/)
+{
+	ComPtr<ID3D12GraphicsCommandList4> commandList;
 	device->CreateCommandList1(
 		0, 
 		m_type, 
 		flags, 
 		IID_PPV_ARGS(&commandList)
 	) >> CHK_HR;
+
+	// Reset command list automatically so its ready for usage.
+	if (autoReset)
+		ResetCommandList(commandList);
 
 	NAME_D3D12_OBJECT_FUNC(commandList, CommandQueueHandler::CreateCommandList);
 
@@ -1356,13 +2184,31 @@ void CommandQueueHandler::Signal()
 	commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
 }
 
-void CommandQueueHandler::Wait(HANDLE event)
+void CommandQueueHandler::Wait()
 {
-	m_fence->SetEventOnCompletion(m_fenceValue, event) >> CHK_HR;
+	// If the latest completed value is already at the fence value or larger,
+	// there is no need to set and wait for any event as it would pass immediately.
+	if (m_fence->GetCompletedValue() < m_fenceValue)
+	{
+		m_fence->SetEventOnCompletion(m_fenceValue, m_eventHandle) >> CHK_HR;
+		WaitForSingleObject(m_eventHandle, INFINITE);
+	}
 }
 
-void CommandQueueHandler::SignalAndWait(HANDLE event)
+void CommandQueueHandler::SignalAndWait()
 {
 	Signal();
-	Wait(event);
+	Wait();
+}
+
+void CommandQueueHandler::ExecuteCommandLists(DX12Abstractions::CommandListVector& commandLists, UINT count /*= 0*/, const UINT offset /*= 0*/)
+{
+	if (count == 0)
+	{
+		count = (UINT)commandLists.size();
+	}
+
+	ID3D12CommandList* const* listStartAddress = GetCommandListPtr(commandLists, offset);
+	assert(listStartAddress != nullptr); // TODO: Handle this error better.
+	commandQueue->ExecuteCommandLists(count, listStartAddress);
 }
