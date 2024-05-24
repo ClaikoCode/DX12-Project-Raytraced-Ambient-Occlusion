@@ -319,9 +319,6 @@ void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPacka
 	std::array<ID3D12DescriptorHeap*, 1> descriptorHeaps = { args.commonRTArgs.cbvSrvUavHeap.Get() };
 	commandList->SetDescriptorHeaps((UINT)descriptorHeaps.size(), descriptorHeaps.data());
 	
-	// TODO: Move to main thread.
-	// SetResourceTransitionBarrier(gCommandList4, mpOutputResource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-	
 	D3D12_DISPATCH_RAYS_DESC raytraceDesc = {};
 	raytraceDesc.Width = args.screenWidth;
 	raytraceDesc.Height = args.screenHeight;
@@ -349,6 +346,11 @@ void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPacka
 
 	// Bind the empty root signature
 	commandList->SetComputeRootSignature(args.commonRTArgs.globalRootSig.Get());
+	commandList->SetComputeRoot32BitConstant(
+		RTShaderRegisters::ConstantRegistersGlobal::ConstantRegister,
+		args.frameCount,
+		0
+	);
 
 	// Dispatch
 	commandList->SetPipelineState1(args.stateObject.Get());

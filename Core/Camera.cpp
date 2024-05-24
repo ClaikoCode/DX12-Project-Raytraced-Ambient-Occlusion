@@ -55,6 +55,24 @@ void Camera::SetPosAndDir(std::array<float, 3> pos, std::array<float, 3> dir)
 	UpdateViewProjectionMatrix();
 }
 
+void Camera::SetPosAndLookAt(std::array<float, 3> pos, std::array<float, 3> lookAtPos)
+{
+	m_position = dx::XMVectorSet(pos[0], pos[1], pos[2], 1.0f);
+	m_target = dx::XMVectorSet(lookAtPos[0], lookAtPos[1], lookAtPos[2], 1.0f);
+
+	UpdateViewMatrix();
+	UpdateViewProjectionMatrix();
+}
+
+void Camera::SetPosAndLookAt(DirectX::XMVECTOR pos, DirectX::XMVECTOR lookAt)
+{
+	m_position = pos;
+	m_target = lookAt;
+
+	UpdateViewMatrix();
+	UpdateViewProjectionMatrix();
+}
+
 const CameraData& Camera::GetData() const
 {
 	return m_data;

@@ -15,7 +15,7 @@ constexpr uint32_t NumContexts = 1u;
 
 // How many back sbuffers the program uses.
 constexpr UINT BufferCount = 2;
-constexpr FLOAT OptimizedClearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+constexpr FLOAT OptimizedClearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 // A unique identifier for each type of render pass.
 enum RenderPassType : uint32_t
@@ -40,12 +40,12 @@ enum GBufferID : UINT
 };
 
 // The maximum number of instances that can be rendered in a single draw call.
-constexpr uint32_t MaxRenderInstances = 32u;
+constexpr uint32_t MaxRenderInstances = 100u;
 constexpr uint32_t MiddleTextureDescriptorCount = 2;
 
 constexpr uint32_t MaxRTVDescriptors = 20u;
 // This should be below the sum of all the descriptors for this type of descriptor.
-constexpr uint32_t MaxCBVSRVUAVDescriptors = 100u;
+constexpr uint32_t MaxCBVSRVUAVDescriptors = MaxRenderInstances * 2;
 
 // The count of different types of descriptors.
 enum CBVSRVUAVCounts : UINT
@@ -108,12 +108,17 @@ namespace RasterShaderRegisters {
 
 namespace RTShaderRegisters {
 
-	enum SRVRegisters : uint32_t {
-		SRDescriptorTable = 0
+	enum SRVRegistersRayGen : uint32_t {
+		SRVDescriptorTableTLASRegister = 0,
+		SRVDescriptorTableGbuffersRegister = 1
 	};
 
-	enum UAVRegisters : uint32_t {
-		UAVDescriptor = 0
+	enum UAVRegistersRayGen : uint32_t {
+		UAVDescriptorRegister = 0
+	};
+
+	enum ConstantRegistersGlobal : uint32_t {
+		ConstantRegister = 0
 	};
 
 }
@@ -129,10 +134,18 @@ enum DefaultRootParameterIdx
 
 enum RTRayGenParameterIdx
 {
-	RayGenSRVTableIdx = 0,
-	RayGenUAVTableIdx = 1,
+	RayGenSRVTableTLASIdx = 0,
+	RayGenSRVTableGbuffersIdx,
+	RayGenUAVTableIdx,
 
 	RTRayGenParameterCount // Keep last!
+};
+
+enum RTGlobalParameterIdx
+{
+	Global32BitConstantIdx = 0,
+
+	RTGlobalParameterCount
 };
 
 enum RTHitGroupParameterIdx

@@ -64,6 +64,7 @@ struct RaytracedAORenderPassArgs
 	CommonRaytracingRenderPassArgs commonRTArgs;
 
 	ComPtr<ID3D12StateObject> stateObject;
+	UINT frameCount;
 	UINT screenWidth;
 	UINT screenHeight;
 };
