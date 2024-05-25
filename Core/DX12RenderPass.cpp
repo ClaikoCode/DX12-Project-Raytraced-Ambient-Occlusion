@@ -57,8 +57,8 @@ void SetInstanceCB(CommonRenderPassArgs& args, const RenderInstance& renderInsta
 	);
 }
 
-DX12RenderPass::DX12RenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState) :
-	m_pipelineState(pipelineState) 
+DX12RenderPass::DX12RenderPass(ComPtr<ID3D12Device5> device)
+	: m_pipelineState(nullptr), m_renderableObjects({})
 {
 	for (UINT i = 0; i < NumContexts; i++)
 	{
@@ -92,6 +92,11 @@ void DX12RenderPass::Init()
 void DX12RenderPass::Close(UINT context)
 {
 	commandLists[context]->Close() >> CHK_HR;
+}
+
+const std::vector<RenderObjectID>& DX12RenderPass::GetRenderableObjects() const
+{
+	return m_renderableObjects;
 }
 
 void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineArgs)
@@ -214,6 +219,70 @@ void IndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, 
 	DrawInstanceIndexed(context, drawArgs, commandList);
 }
 
+DeferredGBufferRenderPass::DeferredGBufferRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
+	: DX12RenderPass(device)
+{
+	// White list render objects.
+	{
+		m_renderableObjects.push_back(RenderObjectID::OBJModel1);
+		//m_renderObjectWhitelist.push_back(RenderObjectID::Cube);
+	}
+
+	struct PipelineStateStream
+	{
+		CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE RootSignature;
+		CD3DX12_PIPELINE_STATE_STREAM_INPUT_LAYOUT InputLayout;
+		CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimtiveTopology;
+		CD3DX12_PIPELINE_STATE_STREAM_VS VS;
+		CD3DX12_PIPELINE_STATE_STREAM_PS PS;
+		CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL DepthStencil;
+		CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
+		CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
+	} pipelineStateStream;
+
+	const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+	};
+
+	ComPtr<ID3DBlob> vsBlob;
+	D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
+
+	ComPtr<ID3DBlob> psBlob;
+	D3DReadFileToBlob(L"../DeferredPixelShader.cso", &psBlob) >> CHK_HR;
+
+	pipelineStateStream.RootSignature = rootSig.Get();
+	pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
+	pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
+	pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
+	pipelineStateStream.DepthStencil = CD3DX12_DEPTH_STENCIL_DESC(CD3DX12_DEFAULT());
+	pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+	D3D12_RT_FORMAT_ARRAY formatArr;
+	memset(&formatArr, 0, sizeof(formatArr)); // Initialize memory with 0.
+
+	// Set the format of each gbuffer.
+	for (UINT i = 0; i < GBufferCount; i++)
+	{
+		formatArr.RTFormats[i] = GBufferFormats[i];
+		formatArr.NumRenderTargets++;
+	}
+
+	// Set the correct array of RTV formats expected.
+	pipelineStateStream.RTVFormats = formatArr;
+
+	const D3D12_PIPELINE_STATE_STREAM_DESC pipelineStateStreamDesc = {
+		.SizeInBytes = sizeof(PipelineStateStream),
+		.pPipelineStateSubobjectStream = &pipelineStateStream
+	};
+
+	device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&m_pipelineState)) >> CHK_HR;
+
+	NAME_D3D12_OBJECT_MEMBER(m_pipelineState, DeferredGBufferRenderPass);
+}
+
 void DeferredGBufferRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
 {
 	// TODO: Handle this error better.
@@ -271,6 +340,49 @@ void DeferredGBufferRenderPass::PerRenderInstance(const RenderInstance& renderIn
 }
 
 
+DeferredLightingRenderPass::DeferredLightingRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
+	: DX12RenderPass(device)
+{
+	struct DeferredLightingStateStream
+	{
+		CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE RootSignature;
+		CD3DX12_PIPELINE_STATE_STREAM_INPUT_LAYOUT InputLayout;
+		CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimtiveTopology;
+		CD3DX12_PIPELINE_STATE_STREAM_VS VS;
+		CD3DX12_PIPELINE_STATE_STREAM_PS PS;
+		CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
+		CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
+	} deferredLightingStateStream;
+
+	// TODO: Check if this is even needed. No actual data for input is used as this is a FSQ drawn from the VS.
+	const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	};
+
+	ComPtr<ID3DBlob> vsBlob;
+	D3DReadFileToBlob(L"../FSQVS.cso", &vsBlob) >> CHK_HR;
+
+	ComPtr<ID3DBlob> psBlob;
+	D3DReadFileToBlob(L"../DeferredLightingPS.cso", &psBlob) >> CHK_HR;
+
+	deferredLightingStateStream.RootSignature = rootSig.Get();
+	deferredLightingStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
+	deferredLightingStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	deferredLightingStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
+	deferredLightingStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
+	deferredLightingStateStream.RTVFormats = { { BackBufferFormat }, 1 };
+	deferredLightingStateStream.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
+	const D3D12_PIPELINE_STATE_STREAM_DESC pipelineStateStreamDesc = {
+			.SizeInBytes = sizeof(DeferredLightingStateStream),
+			.pPipelineStateSubobjectStream = &deferredLightingStateStream
+	};
+
+	device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&m_pipelineState)) >> CHK_HR;
+
+	NAME_D3D12_OBJECT_MEMBER(m_pipelineState, DeferredLightingStateStream);
+}
+
 void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
 {
 	assert(pipelineSpecificArgs != nullptr);
@@ -301,6 +413,13 @@ void DeferredLightingRenderPass::PerRenderObject(const RenderObject& renderObjec
 void DeferredLightingRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
 {
 	// No OP.
+}
+
+RaytracedAORenderPass::RaytracedAORenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
+	: DX12RenderPass(device)
+{
+	// Only allow OBJ models for now.
+	m_renderableObjects.push_back(RenderObjectID::OBJModel1);
 }
 
 void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
@@ -359,10 +478,77 @@ void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPacka
 
 void RaytracedAORenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
 {
-
+	// NO OP
 }
 
 void RaytracedAORenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
 {
+	// NO OP
+}
 
+AccumilationRenderPass::AccumilationRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
+	: DX12RenderPass(device)
+{
+	struct AccumilationPipelineStateStream
+	{
+		CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE RootSignature;
+		CD3DX12_PIPELINE_STATE_STREAM_INPUT_LAYOUT InputLayout;
+		CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimtiveTopology;
+		CD3DX12_PIPELINE_STATE_STREAM_VS VS;
+		CD3DX12_PIPELINE_STATE_STREAM_PS PS;
+		CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
+		CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
+	} accumilationPipelineStateStream;
+
+	// TODO: Check if this is even needed. No actual data for input is used as this is a FSQ drawn from the VS.
+	const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	};
+
+	ComPtr<ID3DBlob> vsBlob;
+	D3DReadFileToBlob(L"../FSQVS.cso", &vsBlob) >> CHK_HR;
+
+	ComPtr<ID3DBlob> psBlob;
+	D3DReadFileToBlob(L"../AccumilationPS.cso", &psBlob) >> CHK_HR;
+
+	accumilationPipelineStateStream.RootSignature = rootSig.Get();
+	accumilationPipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
+	accumilationPipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	accumilationPipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
+	accumilationPipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
+	accumilationPipelineStateStream.RTVFormats = { { BackBufferFormat }, 1 };
+	accumilationPipelineStateStream.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
+	const D3D12_PIPELINE_STATE_STREAM_DESC pipelineStateStreamDesc = {
+			.SizeInBytes = sizeof(AccumilationPipelineStateStream),
+			.pPipelineStateSubobjectStream = &accumilationPipelineStateStream
+	};
+
+	device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&m_pipelineState)) >> CHK_HR;
+
+	NAME_D3D12_OBJECT_MEMBER(m_pipelineState, AccumilationRenderPass);
+}
+
+void AccumilationRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
+{
+	assert(pipelineSpecificArgs != nullptr);
+	const AccumilationRenderPassArgs& args = ToSpecificArgs<AccumilationRenderPassArgs>(pipelineSpecificArgs);
+
+	auto commandList = commandLists[context];
+
+	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
+
+	commandList->OMSetRenderTargets(1, &args.RTVTargetFrame, TRUE, nullptr);
+
+	commandList->DrawInstanced(6, 1, 0, 0);
+}
+
+void AccumilationRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
+{
+	// NO OP
+}
+
+void AccumilationRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
+{
+	// NO OP
 }

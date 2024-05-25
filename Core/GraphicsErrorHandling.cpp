@@ -6,6 +6,11 @@
 #include <format>
 #include <algorithm>
 
+// Wstring conversion includes
+#include <locale>
+#include <codecvt>
+#pragma warning(disable : 4996) // Disable warning for "deprecated" conversion.
+
 #include "DX12Renderer.h"
 
 namespace ErrorHandling
@@ -48,7 +53,9 @@ namespace ErrorHandling
 			}
 
 			// Copy the wide string into a regular string.
-			std::string errorDescription = std::string(errorDescriptionWide.begin(), errorDescriptionWide.end());
+			using convertType = std::codecvt_utf8<wchar_t>;
+			std::wstring_convert<convertType, wchar_t> wstringConverter;
+			std::string errorDescription = wstringConverter.to_bytes(errorDescriptionWide);
 
 			// Replace new lines with spaces.
 			std::replace(errorDescription.begin(), errorDescription.end(), '\n', ' ');

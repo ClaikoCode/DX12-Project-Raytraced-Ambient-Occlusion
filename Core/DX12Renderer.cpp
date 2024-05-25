@@ -272,7 +272,7 @@ void DX12Renderer::Render()
 		{
 			DX12RenderPass& renderPass = *m_renderPasses[renderPassType];
 
-			const std::vector<RenderObjectID>& passObjectIDs = m_renderObjectIDsByRenderPassType[renderPassType];
+			const std::vector<RenderObjectID>& passObjectIDs = renderPass.GetRenderableObjects();
 
 			// Build render packages to send to render.
 			std::vector<RenderPackage> renderPackages;
@@ -355,7 +355,10 @@ void DX12Renderer::Render()
 
 						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList);
 
-						UpdateTopLevelAccelerationStructure(RenderObjectID::OBJModel1, commandList);
+						for (const RenderObjectID renderObjectID : passObjectIDs)
+						{
+							UpdateTopLevelAccelerationStructure(renderObjectID, commandList);
+						}
 					}
 
 					renderPassArgs = RaytracedAORenderPassArgs {
@@ -413,14 +416,15 @@ void DX12Renderer::Render()
 
 	// Execute all command lists.
 	{
-		for (UINT i = 0; i < commandLists.size(); i++)
-		{
-			ID3D12CommandList* const* commandListsRaw = commandLists[i].GetAddressOf();
-			m_directCommandQueue->commandQueue->ExecuteCommandLists(1, commandListsRaw);
-			m_directCommandQueue->SignalAndWait();
-		}
+		//for (UINT i = 0; i < commandLists.size(); i++)
+		//{
+		//	ID3D12CommandList* const* commandListsRaw = commandLists[i].GetAddressOf();
+		//	m_directCommandQueue->commandQueue->ExecuteCommandLists(1, commandListsRaw);
+		//	m_directCommandQueue->SignalAndWait();
+		//}
 
-		//m_directCommandQueue->commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
+		ID3D12CommandList* const* commandListsRaw = commandLists[0].GetAddressOf();
+		m_directCommandQueue->commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
 	}
 
 	// Insert fence that signifies command list completion.
@@ -874,7 +878,7 @@ void DX12Renderer::CreateSRVs()
 
 void DX12Renderer::CreateUAVs()
 {
-	// Uav for middle texture.
+	// UAV for middle texture.
 	{
 		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc;
 		uavDesc.Format = BackBufferFormat;
@@ -889,7 +893,6 @@ void DX12Renderer::CreateUAVs()
 
 		m_device->CreateUnorderedAccessView(m_middleTexture.Get(), nullptr, &uavDesc, middleTextureUAVHandle);
 	}
-	
 }
 
 void DX12Renderer::InitAssets()
@@ -943,154 +946,14 @@ void DX12Renderer::CreateRootSignatures()
 
 void DX12Renderer::CreatePSOs()
 {
-	// TODO: There only needs to be one structure for explaining pipeline state stream. All entries that are not used "simply" needs to be filled with defaults.
-	struct PipelineStateStream
-	{
-		CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE RootSignature;
-		CD3DX12_PIPELINE_STATE_STREAM_INPUT_LAYOUT InputLayout;
-		CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimtiveTopology;
-		CD3DX12_PIPELINE_STATE_STREAM_VS VS;
-		CD3DX12_PIPELINE_STATE_STREAM_PS PS;
-		CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL DepthStencil;
-		CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
-		CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
-	} pipelineStateStream;
-
-	const D3D12_PIPELINE_STATE_STREAM_DESC pipelineStateStreamDesc = {
-			.SizeInBytes = sizeof(PipelineStateStream),
-			.pPipelineStateSubobjectStream = &pipelineStateStream
-	};
-
-	const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
-		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-		{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-		{ "COLOR", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
-	};
-
-	// Simple rendering pass.
-	{
-		//ComPtr<ID3DBlob> vsBlob;
-		//D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
-		//
-		//ComPtr<ID3DBlob> psBlob;
-		//D3DReadFileToBlob(L"../PixelShader.cso", &psBlob) >> CHK_HR;
-		//
-		//pipelineStateStream.RootSignature = m_rasterRootSignature.Get();
-		//pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
-		//pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-		//pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
-		//pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get()); 
-		//pipelineStateStream.DepthStencil = CD3DX12_DEPTH_STENCIL_DESC(CD3DX12_DEFAULT());
-		//pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-		//pipelineStateStream.RTVFormats = {
-		//	.RTFormats = { BackBufferFormat },
-		//	.NumRenderTargets = 1
-		//};
-		//
-		//ComPtr<ID3D12PipelineState> defaultPipelineState;
-		//m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&defaultPipelineState)) >> CHK_HR;
-		//
-		//NAME_D3D12_OBJECT(defaultPipelineState);
-		//
-		//RegisterRenderPass(NonIndexedPass, defaultPipelineState);
-		//RegisterRenderPass(IndexedPass, defaultPipelineState);
-	}
-	
-
-	// Deferred render gbuffer pass settings.
-	{
-		ComPtr<ID3DBlob> vsBlob;
-		D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
-
-		ComPtr<ID3DBlob> psBlob;
-		D3DReadFileToBlob(L"../DeferredPixelShader.cso", &psBlob) >> CHK_HR;
-
-		pipelineStateStream.RootSignature = m_rasterRootSignature.Get();
-		pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
-		pipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-		pipelineStateStream.DepthStencil = CD3DX12_DEPTH_STENCIL_DESC(CD3DX12_DEFAULT());
-		pipelineStateStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-
-		D3D12_RT_FORMAT_ARRAY formatArr;
-		memset(&formatArr, 0, sizeof(formatArr)); // Initialize memory with 0.
-
-		// Set the format of each gbuffer.
-		for (UINT i = 0; i < GBufferCount; i++)
-		{
-			formatArr.RTFormats[i] = GBufferFormats[i];
-			formatArr.NumRenderTargets++;
-		}
-		
-		// Set the correct array of RTV formats expected.
-		pipelineStateStream.RTVFormats = formatArr;
-
-		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
-		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
-
-		ComPtr<ID3D12PipelineState> deferredGBufferPipelineState;
-		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&deferredGBufferPipelineState)) >> CHK_HR;
-
-		NAME_D3D12_OBJECT(deferredGBufferPipelineState);
-
-		RegisterRenderPass(DeferredGBufferPass, deferredGBufferPipelineState);
-	}
-
-	// Deferred render lighting pass settings.
-	{
-		ComPtr<ID3DBlob> vsBlob;
-		D3DReadFileToBlob(L"../FSQVS.cso", &vsBlob) >> CHK_HR;
-
-		ComPtr<ID3DBlob> psBlob;
-		D3DReadFileToBlob(L"../DeferredLightingPS.cso", &psBlob) >> CHK_HR;
-
-		// TODO: Check if this is even needed. No actual data for input is used as this is a FSQ drawn from the VS.
-		const D3D12_INPUT_ELEMENT_DESC inputLayoutSpecial[] = {
-			{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-		};
-
-		struct PipelineStateStreamSpecial
-		{
-			CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE RootSignature;
-			CD3DX12_PIPELINE_STATE_STREAM_INPUT_LAYOUT InputLayout;
-			CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimtiveTopology;
-			CD3DX12_PIPELINE_STATE_STREAM_VS VS;
-			CD3DX12_PIPELINE_STATE_STREAM_PS PS;
-			CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
-			CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
-		} pipelineStateStreamSpecial;
-
-		pipelineStateStreamSpecial.RootSignature = m_rasterRootSignature.Get();
-		pipelineStateStreamSpecial.InputLayout = { inputLayoutSpecial, (UINT)std::size(inputLayoutSpecial) };
-		pipelineStateStreamSpecial.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-		pipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
-		pipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
-		pipelineStateStream.RTVFormats = { { BackBufferFormat }, 1 };
-		pipelineStateStream.DSVFormat = DXGI_FORMAT_UNKNOWN;
-
-		ComPtr<ID3D12PipelineState> deferredLightingPipelineState;
-		m_device->CreatePipelineState(&pipelineStateStreamDesc, IID_PPV_ARGS(&deferredLightingPipelineState)) >> CHK_HR;
-
-		NAME_D3D12_OBJECT_FUNC(deferredLightingPipelineState, CreatePSOs);
-
-		RegisterRenderPass(DeferredLightingPass, deferredLightingPipelineState);
-	}
-
+	RegisterRenderPass(RenderPassType::DeferredGBufferPass);
+	RegisterRenderPass(RenderPassType::DeferredLightingPass);
+	RegisterRenderPass(RenderPassType::AccumilationPass);
 }
 
 
 void DX12Renderer::CreateRenderObjects()
 {
-	// Register what render objects are going to be allowed to render on specific pipelines.
-	{
-		m_renderObjectIDsByRenderPassType[NonIndexedPass].push_back(RenderObjectID::Triangle);
-
-		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::Cube);
-		m_renderObjectIDsByRenderPassType[IndexedPass].push_back(RenderObjectID::OBJModel1);
-
-		m_renderObjectIDsByRenderPassType[DeferredGBufferPass].push_back(RenderObjectID::OBJModel1);
-		//m_renderObjectIDsByRenderPassType[DeferredGBufferPass].push_back(RenderObjectID::Cube);
-	}
-	
 	// Create render objects.
 	{
 		std::vector<Vertex> triangleData = { {
@@ -1575,7 +1438,7 @@ void DX12Renderer::CreateRaytracingPipelineState()
 	m_device->CreateStateObject(&desc, IID_PPV_ARGS(&m_RTPipelineState)) >> CHK_HR;
 
 	// TODO: Make this a more correct way of registering passes.
-	RegisterRenderPass(RaytracedAOPass, nullptr);
+	RegisterRenderPass(RaytracedAOPass);
 }
 
 
@@ -1657,7 +1520,7 @@ void DX12Renderer::CreateGlobalRootSignature(ComPtr<ID3D12RootSignature>& rootSi
 	// No flag needed for global root sig.
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
 	rootSignatureDesc.Init(
-		rootParameters.size(),
+		(UINT)rootParameters.size(),
 		rootParameters.data()
 	);
 
@@ -1911,11 +1774,11 @@ void DX12Renderer::UpdateTopLevelAccelerationStructure(RenderObjectID objectID, 
 // What this macro does is adds it to the render pass map and also registers it for the sync handler.
 #define CaseRegisterRenderPass(renderpasstype, renderclass) \
 case renderpasstype: \
-	m_renderPasses[renderpasstype] = std::make_unique<renderclass>(m_device.Get(), pipelineState); \
+	m_renderPasses[renderpasstype] = std::make_unique<renderclass>(m_device.Get(), m_rasterRootSignature); \
 	m_syncHandler.AddUniquePassSync(renderpasstype); \
 	break
 
-void DX12Renderer::RegisterRenderPass(const RenderPassType renderPassType, ComPtr<ID3D12PipelineState> pipelineState)
+void DX12Renderer::RegisterRenderPass(const RenderPassType renderPassType)
 {
 	switch (renderPassType)
 	{
@@ -1928,6 +1791,8 @@ void DX12Renderer::RegisterRenderPass(const RenderPassType renderPassType, ComPt
 		CaseRegisterRenderPass(DeferredLightingPass, DeferredLightingRenderPass);
 
 		CaseRegisterRenderPass(RaytracedAOPass, RaytracedAORenderPass);
+
+		CaseRegisterRenderPass(AccumilationPass, AccumilationRenderPass);
 
 	default:
 		// TODO: Handle this error better.

@@ -1,10 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
+
+#include "DirectXIncludes.h"
 
 /*
-* This file is used to define the common types and constants that are used throughout the application.
-* 
+	This file is used to define the common types and constants that are used throughout the application.
 */
 
 // Common paths
@@ -13,9 +15,12 @@ constexpr const char* AssetsPath = "../../../../assets/";
 // The number of contexts that the program uses.
 constexpr uint32_t NumContexts = 1u;
 
-// How many back sbuffers the program uses.
+// How many back back buffers the program uses.
 constexpr UINT BufferCount = 2;
 constexpr FLOAT OptimizedClearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+// Reference to the back buffer format.
+constexpr DXGI_FORMAT BackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
 // A unique identifier for each type of render pass.
 enum RenderPassType : uint32_t
@@ -25,6 +30,7 @@ enum RenderPassType : uint32_t
 	DeferredGBufferPass,
 	DeferredLightingPass,
 	RaytracedAOPass,
+	AccumilationPass,
 
 	NumRenderPasses // Keep this last!
 };
@@ -38,6 +44,9 @@ enum GBufferID : UINT
 
 	GBufferCount // Keep last!
 };
+
+// Array of formats for each gbuffer texture.
+constexpr std::array<DXGI_FORMAT, GBufferCount> GBufferFormats = { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT };
 
 // The maximum number of instances that can be rendered in a single draw call.
 constexpr uint32_t MaxRenderInstances = 100u;

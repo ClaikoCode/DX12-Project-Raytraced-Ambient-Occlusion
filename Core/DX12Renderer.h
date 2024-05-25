@@ -17,9 +17,6 @@
 
 using Microsoft::WRL::ComPtr;
 
-constexpr std::array<DXGI_FORMAT, GBufferCount> GBufferFormats = { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT };
-constexpr DXGI_FORMAT BackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-
 constexpr LPCWSTR MissShaderName = L"miss";
 constexpr LPCWSTR RayGenShaderName = L"raygen";
 constexpr LPCWSTR AnyHitShaderName = L"anyhit";
@@ -126,7 +123,7 @@ private:
 	void UpdateInstanceConstantBuffers();
 	void UpdateTopLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList);
 
-	void RegisterRenderPass(const RenderPassType renderPassType, ComPtr<ID3D12PipelineState> pipelineState);
+	void RegisterRenderPass(const RenderPassType renderPassType);
 	
 	void ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList);
 
@@ -174,7 +171,6 @@ private:
 
 	std::unordered_map<RenderObjectID, RenderObject> m_renderObjectsByID;
 	std::unordered_map<RenderObjectID, std::vector<RenderInstance>> m_renderInstancesByID;
-	std::unordered_map<RenderPassType, std::vector<RenderObjectID>> m_renderObjectIDsByRenderPassType;
 
 	std::unordered_map<RenderObjectID, DX12Abstractions::AccelerationStructureBuffers> m_bottomAccStructByID;
 	std::unordered_map<RenderObjectID, DX12Abstractions::AccelerationStructureBuffers> m_topAccStructByID;

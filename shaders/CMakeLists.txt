@@ -4,7 +4,7 @@ add_custom_target(Shaders)
 
 # Set shader files
 set(HLSL_VERTEX_SHADERS VertexShader.hlsl FSQVS.hlsl)
-set(HLSL_PIXEL_SHADERS PixelShader.hlsl DeferredPixelShader.hlsl DeferredLightingPS.hlsl)
+set(HLSL_PIXEL_SHADERS PixelShader.hlsl DeferredPixelShader.hlsl DeferredLightingPS.hlsl AccumilationPS.hlsl)
 
 
 # Set shader type properties

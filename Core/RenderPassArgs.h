@@ -69,6 +69,15 @@ struct RaytracedAORenderPassArgs
 	UINT screenHeight;
 };
 
+struct AccumilationRenderPassArgs
+{
+	CommonRenderPassArgs commonArgs;
+
+	CD3DX12_CPU_DESCRIPTOR_HANDLE RTVTargetFrame;
+	CD3DX12_CPU_DESCRIPTOR_HANDLE SRVCurrentFrame;
+	CD3DX12_CPU_DESCRIPTOR_HANDLE SRVPrevFrame;
+};
+
 // This acts as a union of sorts but is safer in the way that
 // if a certain type is trying to be fetched from the variant is not the same as the one that was previously written 
 // then an exception is thrown. For my app, this only gives me upsides as there is no need for any other niche usage pattern.
@@ -79,5 +88,6 @@ using RenderPassArgs = std::variant
 	IndexedRenderPassArgs, 
 	DeferredGBufferRenderPassArgs, 
 	DeferredLightingRenderPassArgs,
-	RaytracedAORenderPassArgs
+	RaytracedAORenderPassArgs,
+	AccumilationRenderPassArgs
 >;

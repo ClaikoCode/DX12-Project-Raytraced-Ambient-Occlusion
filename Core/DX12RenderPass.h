@@ -32,51 +32,52 @@ T& ToSpecificArgs(RenderPassArgs* pipelineSpecificArgs)
 class DX12RenderPass
 {
 public:
-	DX12RenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState);
+	DX12RenderPass(ComPtr<ID3D12Device5> device);
 	~DX12RenderPass() = default;
 
 	void Init();
 	void Close(UINT context);
+	const std::vector<RenderObjectID>& GetRenderableObjects() const;
 
 	virtual void Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineArgs) = 0;
 
-private:
+protected:
+	//virtual void BuildPipelineState() = 0;
+
 	virtual void PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context) = 0;
 	virtual void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context) = 0;
 
 public:
-
 	CommandAllocators commandAllocators;
 	CommandLists commandLists;
 	
 protected:
 	ComPtr<ID3D12PipelineState> m_pipelineState;
-
+	std::vector<RenderObjectID> m_renderableObjects;
 };
 
 class NonIndexedRenderPass : public DX12RenderPass
 {
 public:
-	NonIndexedRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState) 
-		: DX12RenderPass(device, pipelineState) {}
+	NonIndexedRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig)
+		: DX12RenderPass(device) {}
 
 	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineArgs) override final;
 
-private:
+protected:
 	void PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context) override final;
 	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context) override final;
-	
 };
 
 class IndexedRenderPass : public DX12RenderPass
 {
 public:
-	IndexedRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
-		: DX12RenderPass(device, pipelineState) {}
+	IndexedRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig)
+		: DX12RenderPass(device) {}
 
 	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs) override final;
 
-private:
+protected:
 	void PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context) override final;
 	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context) override final;
 };
@@ -84,12 +85,11 @@ private:
 class DeferredGBufferRenderPass : public DX12RenderPass
 {
 public:
-	DeferredGBufferRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
-		: DX12RenderPass(device, pipelineState) {}
+	DeferredGBufferRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig);
 
 	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs) override final;
 
-private:
+protected:
 	void PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context) override final;
 	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context) override final;
 };
@@ -97,12 +97,11 @@ private:
 class DeferredLightingRenderPass : public DX12RenderPass
 {
 public:
-	DeferredLightingRenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
-		: DX12RenderPass(device, pipelineState) {}
+	DeferredLightingRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig);
 
 	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs) override final;
 
-private:
+protected:
 	void PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context) override final;
 	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context) override final;
 };
@@ -110,12 +109,23 @@ private:
 class RaytracedAORenderPass : public DX12RenderPass
 {
 public:
-	RaytracedAORenderPass(ID3D12Device* device, ComPtr<ID3D12PipelineState> pipelineState)
-		: DX12RenderPass(device, pipelineState) {}
+	RaytracedAORenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig);
 
 	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs) override final;
 
-private:
+protected:
+	void PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context) override final;
+	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context) override final;
+};
+
+class AccumilationRenderPass : public DX12RenderPass
+{
+public:
+	AccumilationRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig);
+
+	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs) override final;
+
+protected:
 	void PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context) override final;
 	void PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context) override final;
 };
