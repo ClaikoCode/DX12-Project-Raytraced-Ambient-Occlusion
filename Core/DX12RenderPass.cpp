@@ -29,6 +29,11 @@ void SetCommonStates(CommonRenderPassArgs commonArgs, ComPtr<ID3D12PipelineState
 		&vpMatrix,
 		0
 	);
+
+	commandList->SetGraphicsRootConstantBufferView(
+		DefaultRootParameterIdx::CBVGlobalFrameDataIdx,
+		commonArgs.globalFrameDataResource->GetGPUVirtualAddress()
+	);
 }
 
 void DrawInstanceIndexed(UINT context, const std::vector<DrawArgs>& drawArgs, ComPtr<ID3D12GraphicsCommandList> commandList)
@@ -224,8 +229,8 @@ DeferredGBufferRenderPass::DeferredGBufferRenderPass(ComPtr<ID3D12Device5> devic
 {
 	// White list render objects.
 	{
-		m_renderableObjects.push_back(RenderObjectID::OBJModel1);
-		//m_renderObjectWhitelist.push_back(RenderObjectID::Cube);
+		//m_renderableObjects.push_back(RenderObjectID::OBJModel1);
+		m_renderableObjects.push_back(RenderObjectID::Cube);
 	}
 
 	struct PipelineStateStream
@@ -398,7 +403,7 @@ void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& render
 	// Set the descriptor table for gbuffer srvs.
 	auto descHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
 	descHeapHandle.Offset(CBVSRVUAVOffsets::SRVOffsetGBuffers, args.commonArgs.cbvSrvUavDescSize);
-	commandList->SetGraphicsRootDescriptorTable(DefaultRootParameterIdx::SRVTableIdx, descHeapHandle);
+	commandList->SetGraphicsRootDescriptorTable(DefaultRootParameterIdx::UAVSRVTableIdx, descHeapHandle);
 
 	commandList->OMSetRenderTargets(1, &args.RTV, TRUE, nullptr);
 
@@ -419,7 +424,7 @@ RaytracedAORenderPass::RaytracedAORenderPass(ComPtr<ID3D12Device5> device, ComPt
 	: DX12RenderPass(device)
 {
 	// Only allow OBJ models for now.
-	m_renderableObjects.push_back(RenderObjectID::OBJModel1);
+	m_renderableObjects.push_back(RenderObjectID::Cube);
 }
 
 void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
@@ -532,13 +537,20 @@ AccumilationRenderPass::AccumilationRenderPass(ComPtr<ID3D12Device5> device, Com
 void AccumilationRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
 {
 	assert(pipelineSpecificArgs != nullptr);
-	const AccumilationRenderPassArgs& args = ToSpecificArgs<AccumilationRenderPassArgs>(pipelineSpecificArgs);
+	const AccumulationRenderPassArgs& args = ToSpecificArgs<AccumulationRenderPassArgs>(pipelineSpecificArgs);
 
 	auto commandList = commandLists[context];
 
 	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
-
+	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	commandList->OMSetRenderTargets(1, &args.RTVTargetFrame, TRUE, nullptr);
+
+	// Set the descriptor table for SRVs and UAVs
+	auto descHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
+	descHeapHandle.Offset(CBVSRVUAVOffsets::SRVOffsetGBuffers, args.commonArgs.cbvSrvUavDescSize);
+	commandList->SetGraphicsRootDescriptorTable(DefaultRootParameterIdx::UAVSRVTableIdx, descHeapHandle);
+
+	
 
 	commandList->DrawInstanced(6, 1, 0, 0);
 }

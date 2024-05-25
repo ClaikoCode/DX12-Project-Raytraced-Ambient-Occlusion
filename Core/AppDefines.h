@@ -30,7 +30,7 @@ enum RenderPassType : uint32_t
 	DeferredGBufferPass,
 	DeferredLightingPass,
 	RaytracedAOPass,
-	AccumilationPass,
+	AccumulationPass,
 
 	NumRenderPasses // Keep this last!
 };
@@ -59,40 +59,53 @@ constexpr uint32_t MaxCBVSRVUAVDescriptors = MaxRenderInstances * 2;
 // The count of different types of descriptors.
 enum CBVSRVUAVCounts : UINT
 {
-	CBVCountRenderInstance = MaxRenderInstances,
-	SRVCountGbuffers = GBufferCount,
-	SRVCountMiddleTexture = 1,
-	SRVCountTLAS = 1,
-	UAVCountMiddleTexture = 1
+	CBVCountRenderInstance				= MaxRenderInstances,
+	CBVCountGlobalFrameData				= 1,
+	SRVCountGbuffers					= GBufferCount,
+	SRVCountMiddleTexture				= 1,
+	SRVCountAccumulationTexture			= 1,
+	SRVCountTLAS						= 1,
+	UAVCountMiddleTexture				= 1,
+	UAVCountAccumulationTexture			= 1
 };
 
 // Offsets for descriptors in the descriptor heap. The pattern is always adding the value before and adding its equivalent count.
 // So its always: [DescriptorType]Offset[SpecificName] + [DescriptorType]Count[SpecificName].
 enum CBVSRVUAVOffsets : UINT {
-	CBVOffsetRenderInstance = 0,
-	SRVOffsetGBuffers = CBVCountRenderInstance,
-	SRVOffsetMiddleTexture = SRVOffsetGBuffers + SRVCountGbuffers,
-	SRVOffsetTLAS = SRVOffsetMiddleTexture + SRVCountMiddleTexture,
-	UAVOffsetMiddleTexture = SRVOffsetTLAS + SRVCountTLAS
+	CBVOffsetRenderInstance			= 0,
+	CBVOffsetGlobalFrameData		= CBVOffsetRenderInstance		+ CBVCountRenderInstance,
+	SRVOffsetGBuffers				= CBVOffsetGlobalFrameData		+ CBVCountGlobalFrameData,
+	SRVOffsetMiddleTexture			= SRVOffsetGBuffers				+ SRVCountGbuffers,
+	SRVOffsetAccumulationTexture	= SRVOffsetMiddleTexture		+ SRVCountMiddleTexture,
+	SRVOffsetTLAS					= SRVOffsetAccumulationTexture	+ SRVCountAccumulationTexture,
+	UAVOffsetMiddleTexture			= SRVOffsetTLAS					+ SRVCountTLAS,
+	UAVOffsetAccumulationTexture	= UAVOffsetMiddleTexture		+ UAVCountMiddleTexture
 };
 
 enum RTVCounts : UINT
 {
-	RTVCountBackbuffers = BufferCount,
-	RTVCountGbuffers = GBufferCount,
-	RTVCountMiddleTexture = 1
+	RTVCountBackbuffers		= BufferCount,
+	RTVCountGbuffers		= GBufferCount,
+	RTVCountMiddleTexture	= 1
 };
 
 enum RTVOffsets : UINT
 {
-	RTVOffsetBackBuffers = 0, // Back buffers should always come first for simplicity.
-	RTVOffsetGBuffers = RTVOffsetBackBuffers + RTVCountBackbuffers,
-	RTVOffsetMiddleTexture = RTVOffsetGBuffers + RTVCountGbuffers
+	RTVOffsetBackBuffers	= 0, // Back buffers should always come first for simplicity.
+	RTVOffsetGBuffers		= RTVOffsetBackBuffers + RTVCountBackbuffers,
+	RTVOffsetMiddleTexture	= RTVOffsetGBuffers + RTVCountGbuffers
 };
 
 struct InstanceConstants
 {
 	DirectX::XMFLOAT4X4 modelMatrix;
+};
+
+struct GlobalFrameData
+{
+	UINT frameCount;
+	UINT accumulatedFrames;
+	float time;
 };
 
 enum class RenderObjectID : uint32_t
@@ -105,12 +118,17 @@ enum class RenderObjectID : uint32_t
 namespace RasterShaderRegisters {
 
 	enum CBVRegisters : uint32_t {
-		CBMatrixConstants = 0,
-		CBDescriptorTable = 1,
+		CBMatrixConstants		= 0,
+		CBVDescriptorGlobals	= 1,
+		CBVDescriptorRange		= 2
 	};
 
 	enum SRVRegisters : uint32_t {
-		SRDescriptorTable = 0
+		SRVDescriptorRange = 0
+	};
+
+	enum UAVRegisters : uint32_t {
+		UAVDescriptorRange = 0
 	};
 
 }
@@ -118,8 +136,8 @@ namespace RasterShaderRegisters {
 namespace RTShaderRegisters {
 
 	enum SRVRegistersRayGen : uint32_t {
-		SRVDescriptorTableTLASRegister = 0,
-		SRVDescriptorTableGbuffersRegister = 1
+		SRVDescriptorTableTLASRegister		= 0,
+		SRVDescriptorTableGbuffersRegister	= 1
 	};
 
 	enum UAVRegistersRayGen : uint32_t {
@@ -135,8 +153,9 @@ namespace RTShaderRegisters {
 enum DefaultRootParameterIdx
 {
 	MatrixIdx = 0,
-	CBVTableIdx = 1,
-	SRVTableIdx = 2,
+	CBVGlobalFrameDataIdx,
+	CBVTableIdx,
+	UAVSRVTableIdx,
 
 	DefaultRootParameterCount // Keep last!
 };
@@ -159,8 +178,8 @@ enum RTGlobalParameterIdx
 
 enum RTHitGroupParameterIdx
 {
-	HitGroupSRVTableIdx = 0,
-	HitGroupUAVIdx = 1,
+	HitGroupSRVTableIdx		= 0,
+	HitGroupUAVIdx			= 1,
 
 	RTHitGroupParameterCount // Keep last!
 };

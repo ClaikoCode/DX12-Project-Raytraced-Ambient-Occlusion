@@ -59,7 +59,11 @@ namespace DX12Abstractions
 		D3D12_CLEAR_VALUE* optimizedClearValPtr = nullptr;
 		D3D12_CLEAR_VALUE optimizedClearVal;
 
-		if (resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+		bool canUseOptimizedClearVal =
+			resourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && // If it is a texture.
+			resourceDesc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL); // If it has the right flags.
+		
+		if (canUseOptimizedClearVal)
 		{
 			optimizedClearVal = {
 				.Format = resourceDesc.Format,

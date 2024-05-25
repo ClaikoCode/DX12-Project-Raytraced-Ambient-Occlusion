@@ -22,6 +22,7 @@ constexpr LPCWSTR RayGenShaderName = L"raygen";
 constexpr LPCWSTR AnyHitShaderName = L"anyhit";
 constexpr LPCWSTR HitGroupName = L"HitGroup";
  
+
 class CommandQueueHandler
 {
 public:
@@ -86,6 +87,7 @@ private:
 	void CreateDeviceAndSwapChain();
 	void CreateGBuffers();
 	void CreateMiddleTexture();
+	void CreateAccumulationTexture();
 	void CreateRTVHeap();
 	void CreateRTVs();
 	void CreateDepthBuffer();
@@ -117,18 +119,26 @@ private:
 	void CreateGlobalRootSignature(ComPtr<ID3D12RootSignature>& rootSig);
 	void CreateShaderTables();
 	void CreateTopLevelASDescriptors();
+	void CreateTopLevelASDescriptor(RenderObjectID objectID);
 
 	void SerializeAndCreateRootSig(CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc, ComPtr<ID3D12RootSignature>& rootSig);
 
+	void UpdateCamera();
+
 	void UpdateInstanceConstantBuffers();
+	void UpdateGlobalFrameDataBuffer();
 	void UpdateTopLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList);
 
-	void RegisterRenderPass(const RenderPassType renderPassType);
-	
 	void ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList);
+
+	void RegisterRenderPass(const RenderPassType renderPassType);
 
 	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<VertexIndex>* indices, D3D12_PRIMITIVE_TOPOLOGY topology);
 	RenderObject CreateRenderObjectFromOBJ(const std::string& objPath, D3D12_PRIMITIVE_TOPOLOGY topology);
+
+	CD3DX12_RESOURCE_DESC CreateBackbufferResourceDesc() const;
+	D3D12_SHADER_RESOURCE_VIEW_DESC CreateBackbufferSRVDesc() const;
+	D3D12_UNORDERED_ACCESS_VIEW_DESC CreateBackbufferUAVDesc() const;
 
 private:
 
@@ -152,6 +162,7 @@ private:
 	std::array<DX12Abstractions::GPUResource, GBufferCount> m_gBuffers;
 	std::array<DX12Abstractions::GPUResource, BufferCount> m_backBuffers;
 	DX12Abstractions::GPUResource m_middleTexture;
+	DX12Abstractions::GPUResource m_accumulationTexture;
 
 	ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
 	ComPtr<ID3D12Resource> m_depthBuffer;
@@ -159,6 +170,7 @@ private:
 	ComPtr<ID3D12DescriptorHeap> m_cbvSrvUavHeap;
 	UINT m_cbvSrvUavDescriptorSize;
 	GPUResource m_perInstanceCB;
+	GPUResource m_globalFrameDataCB;
 
 	std::unordered_map<RenderPassType, std::unique_ptr<DX12RenderPass>> m_renderPasses;
 	ComPtr<ID3D12RootSignature> m_rasterRootSignature;
@@ -181,6 +193,11 @@ private:
 
 	Camera* m_activeCamera;
 	std::vector<Camera> m_cameras;
+
+	UINT m_frameCount;
+	UINT m_accumulatedFrames;
+	float m_time;
+
 
 	static DX12Renderer* s_instance;
 };

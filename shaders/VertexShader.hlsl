@@ -19,13 +19,21 @@ struct ModelTransform
     matrix transform;
 };
 
+struct GlobalFrameData
+{
+    uint frameCount;
+    uint accumulatedFrames;
+    float time;
+};
+
 struct CameraInfo
 {
     matrix viewProjMatrix;
 };
 
 ConstantBuffer<CameraInfo> camInfo : register(b0);
-ConstantBuffer<ModelTransform> transf : register(b1);
+ConstantBuffer<GlobalFrameData> frameData : register(b1);
+ConstantBuffer<ModelTransform> transf : register(b2);
 
 VSOut main(VSIn input)
 {

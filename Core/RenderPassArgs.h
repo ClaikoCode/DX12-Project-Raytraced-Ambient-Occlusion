@@ -14,7 +14,7 @@ struct CommonRenderPassArgs
 	ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeap;
 	UINT cbvSrvUavDescSize;
 
-	float time;
+	ComPtr<ID3D12Resource> globalFrameDataResource;
 
 	DirectX::XMMATRIX viewProjectionMatrix;
 };
@@ -69,13 +69,11 @@ struct RaytracedAORenderPassArgs
 	UINT screenHeight;
 };
 
-struct AccumilationRenderPassArgs
+struct AccumulationRenderPassArgs
 {
 	CommonRenderPassArgs commonArgs;
 
 	CD3DX12_CPU_DESCRIPTOR_HANDLE RTVTargetFrame;
-	CD3DX12_CPU_DESCRIPTOR_HANDLE SRVCurrentFrame;
-	CD3DX12_CPU_DESCRIPTOR_HANDLE SRVPrevFrame;
 };
 
 // This acts as a union of sorts but is safer in the way that
@@ -89,5 +87,5 @@ using RenderPassArgs = std::variant
 	DeferredGBufferRenderPassArgs, 
 	DeferredLightingRenderPassArgs,
 	RaytracedAORenderPassArgs,
-	AccumilationRenderPassArgs
+	AccumulationRenderPassArgs
 >;
