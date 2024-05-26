@@ -20,7 +20,8 @@ constexpr UINT BufferCount = 2;
 constexpr FLOAT OptimizedClearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 // Reference to the back buffer format.
-constexpr DXGI_FORMAT BackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+//constexpr DXGI_FORMAT BackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+constexpr DXGI_FORMAT BackBufferFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
 // A unique identifier for each type of render pass.
 enum RenderPassType : uint32_t

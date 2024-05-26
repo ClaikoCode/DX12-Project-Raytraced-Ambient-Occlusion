@@ -39,6 +39,13 @@ public:
 	void Close(UINT context);
 	const std::vector<RenderObjectID>& GetRenderableObjects() const;
 
+	void Enable();
+	void Disable();
+	bool IsEnabled();
+
+	ComPtr<ID3D12GraphicsCommandList4> GetFirstCommandList();
+	ComPtr<ID3D12GraphicsCommandList4> GetLastCommandList();
+
 	virtual void Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineArgs) = 0;
 
 protected:
@@ -54,6 +61,8 @@ public:
 protected:
 	ComPtr<ID3D12PipelineState> m_pipelineState;
 	std::vector<RenderObjectID> m_renderableObjects;
+
+	bool m_enabled;
 };
 
 class NonIndexedRenderPass : public DX12RenderPass

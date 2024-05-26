@@ -26,6 +26,11 @@ constexpr LPCWSTR HitGroupName = L"HitGroup";
 class CommandQueueHandler
 {
 public:
+
+	// Static variable describing max wait time for command queue.
+	static const UINT MaxWaitTimeMS = 20000u;
+
+public:
 	CommandQueueHandler();
 	~CommandQueueHandler();
 	CommandQueueHandler(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE type);
@@ -130,6 +135,7 @@ private:
 	void UpdateTopLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList);
 
 	void ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList);
+	void TransitionGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList, D3D12_RESOURCE_STATES newResourceState);
 
 	void RegisterRenderPass(const RenderPassType renderPassType);
 
@@ -154,6 +160,7 @@ private:
 	
 	// Command queues that are to be used by the main thread.
 	std::unique_ptr<CommandQueueHandler> m_directCommandQueue;
+	std::unique_ptr<CommandQueueHandler> m_computeCommandQueue;
 	std::unique_ptr<CommandQueueHandler> m_copyCommandQueue;
 
 	ComPtr<ID3D12DescriptorHeap> m_rtvHeap;

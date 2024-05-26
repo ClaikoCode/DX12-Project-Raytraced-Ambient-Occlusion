@@ -63,7 +63,7 @@ void SetInstanceCB(CommonRenderPassArgs& args, const RenderInstance& renderInsta
 }
 
 DX12RenderPass::DX12RenderPass(ComPtr<ID3D12Device5> device)
-	: m_pipelineState(nullptr), m_renderableObjects({})
+	: m_pipelineState(nullptr), m_renderableObjects({}), m_enabled(true)
 {
 	for (UINT i = 0; i < NumContexts; i++)
 	{
@@ -102,6 +102,31 @@ void DX12RenderPass::Close(UINT context)
 const std::vector<RenderObjectID>& DX12RenderPass::GetRenderableObjects() const
 {
 	return m_renderableObjects;
+}
+
+void DX12RenderPass::Enable()
+{
+	m_enabled = true;
+}
+
+void DX12RenderPass::Disable()
+{
+	m_enabled = false;
+}
+
+bool DX12RenderPass::IsEnabled()
+{
+	return m_enabled;
+}
+
+ComPtr<ID3D12GraphicsCommandList4> DX12RenderPass::GetFirstCommandList()
+{
+	return commandLists[0];
+}
+
+ComPtr<ID3D12GraphicsCommandList4> DX12RenderPass::GetLastCommandList()
+{
+	return commandLists[commandLists.size() - 1];
 }
 
 void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineArgs)

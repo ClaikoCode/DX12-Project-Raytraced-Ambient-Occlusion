@@ -32,7 +32,7 @@ uint2 GetPixelIndex(const in float2 uv)
 
 float4 main(VSQuadOut input) : SV_TARGET0
 {
-    const uint accumulatedFrames = clamp(frameData.accumulatedFrames, 0, 35);
+    const uint accumulatedFrames = clamp(frameData.accumulatedFrames, 0, 150);
     
     uint2 pixelIndex = GetPixelIndex(input.texcoord);
     

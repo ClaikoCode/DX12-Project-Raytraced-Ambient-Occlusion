@@ -166,7 +166,8 @@ void DX12Renderer::Render()
 	mainThreadCommandListPre->Reset(mainThreadCommandAllocatorPre.Get(), nullptr);
 	// Reset post command list.
 	mainThreadCommandListPost->Reset(mainThreadCommandAllocatorPost.Get(), nullptr);
-	
+
+	//std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
 	std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
 
 	// Pre render pass setup.
@@ -189,11 +190,7 @@ void DX12Renderer::Render()
 		// Setup gbuffers.
 		if (HasRenderPass(renderPassOrder, RenderPassType::DeferredGBufferPass))
 		{
-			for (GPUResource& gBuffer : m_gBuffers)
-			{
-				gBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
-			}
-
+			TransitionGBuffers(mainThreadCommandListPre, D3D12_RESOURCE_STATE_RENDER_TARGET);
 			ClearGBuffers(mainThreadCommandListPre);
 		}
 		
@@ -215,10 +212,7 @@ void DX12Renderer::Render()
 		commandLists.push_back(mainThreadCommandListPre);
 	}
 
-	//std::vector<RenderPassType> renderPassOrder = { IndexedPass, NonIndexedPass };
-	
-
-	// Initialize all render passes.
+	// Initialize all render passes (resetting).
 	for (auto& renderPass : renderPassOrder)
 	{
 		m_renderPasses[renderPass]->Init();
@@ -259,8 +253,11 @@ void DX12Renderer::Render()
 		// Wait for start sync.
 		m_syncHandler.WaitStart(context);
 
-		for (RenderPassType renderPassType : renderPassOrder)
+		for (UINT passIndex = 0; passIndex < renderPassOrder.size(); passIndex++)
 		{
+			bool isLastRenderPass = passIndex == (renderPassOrder.size() - 1);
+
+			RenderPassType renderPassType = renderPassOrder[passIndex];
 			DX12RenderPass& renderPass = *m_renderPasses[renderPassType];
 
 			const std::vector<RenderObjectID>& passObjectIDs = renderPass.GetRenderableObjects();
@@ -281,8 +278,9 @@ void DX12Renderer::Render()
 			}
 
 			// Only try to render if there actually is anything to render.
-			// If 
-			if (renderPackages.size() > 0 || passObjectIDs.size() == 0)
+			// If the render pass does not have any objects at all then it is assumed it doesn't need them to fulfill its task.
+			// Dont render if its disabled.
+			if ((renderPackages.size() > 0 || passObjectIDs.size() == 0) && renderPass.IsEnabled())
 			{
 				RenderPassArgs renderPassArgs;
 
@@ -318,37 +316,40 @@ void DX12Renderer::Render()
 				{
 					if (context == 0)
 					{
-						auto commandList = renderPass.commandLists[context];
+						auto commandList = renderPass.GetFirstCommandList();
 
-						for (GPUResource& gBuffer : m_gBuffers)
+						D3D12_RESOURCE_STATES gBufferResourceState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+						// Using the concept of better resource transitions depending on what type of render pipeline we have.
+						// If we know that a raytraced AO pass will come, we make sure that it also can be used outside of a pixel shader.
+						if (HasRenderPass(renderPassOrder, RaytracedAOPass))
 						{
-							gBuffer.TransitionTo(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, commandList);
+							gBufferResourceState |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 						}
 
-						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, commandList);
+						// Resource barrier for g buffers.
+						TransitionGBuffers(commandList, gBufferResourceState);
 
-						// Put uav barrier before use.
-						CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_accumulationTexture.Get());
-						commandList->ResourceBarrier(1, &uavBarrier);
+						// If this is the last render pass we make the middle texture as final output instead.
+						if(isLastRenderPass)
+							m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, commandList);
 					}
 
 					renderPassArgs = DeferredLightingRenderPassArgs {
 						.commonArgs = commonArgs,
-						.RTV = middleTextureRTV
+						.RTV = isLastRenderPass ? bbRTV : middleTextureRTV
 					};
 				}
 				else if (renderPassType == RaytracedAOPass)
 				{
 					if (context == 0)
 					{
-						auto commandList = renderPass.commandLists[context];
-
-						for (GPUResource& gBuffer : m_gBuffers)
-						{
-							gBuffer.TransitionTo(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, commandList);
-						}
+						auto commandList = renderPass.GetFirstCommandList();
 
 						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList);
+						
+						// Put resource barrier.
+						CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_middleTexture.Get());
+						commandList->ResourceBarrier(1, &uavBarrier);
 
 						for (const RenderObjectID renderObjectID : passObjectIDs)
 						{
@@ -363,14 +364,26 @@ void DX12Renderer::Render()
 						.screenWidth = m_width,
 						.screenHeight = m_height,
 					};
+
+					if (isLastRenderPass && context == 0)
+					{
+						// Copy middle texture to back buffer.
+						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_COPY_SOURCE, mainThreadCommandListPost);
+						currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_COPY_DEST, mainThreadCommandListPost);
+						mainThreadCommandListPost->CopyResource(currentBackBuffer.Get(), m_middleTexture.Get());
+					}
 				}
 				else if (renderPassType == AccumulationPass)
 				{
 					if (context == 0)
 					{
-						auto commandList = renderPass.commandLists[context];
+						auto commandList = renderPass.GetFirstCommandList();
 
 						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, commandList);
+
+						// Put uav barrier before use.
+						CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_accumulationTexture.Get());
+						commandList->ResourceBarrier(1, &uavBarrier);
 					}
 
 					renderPassArgs = AccumulationRenderPassArgs {
@@ -381,7 +394,8 @@ void DX12Renderer::Render()
 					if (context == 0)
 					{
 						static const float frequency = 1.0f;
-						m_accumulatedFrames = (1u * (UINT)(m_time * frequency));
+						//m_accumulatedFrames = (1u * (UINT)(m_time * frequency));
+						m_accumulatedFrames += 1;
 					}
 				}
 				else
@@ -403,41 +417,32 @@ void DX12Renderer::Render()
 		m_syncHandler.SetEnd(context);
 	}
 
-	// Wait for all passes to finish.
+	// Wait for all passes to finish on the CPU.
 	m_syncHandler.WaitEndAll();
+
+	// Prepare back buffer for present.
+	currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_PRESENT, mainThreadCommandListPost);
+
+	// Close post command list.
+	mainThreadCommandListPost->Close() >> CHK_HR;
 
 	// Add all command lists to the main command list.
 	for (RenderPassType renderPass : renderPassOrder)
 	{
 		for (UINT context = 0; context < NumContexts; context++)
 		{
-			commandLists.push_back(m_renderPasses[renderPass]->commandLists[context]);
+			if (m_renderPasses[renderPass]->IsEnabled())
+			{
+				commandLists.push_back(m_renderPasses[renderPass]->commandLists[context]);
+			}
 		}
 	}
-
-	// Coppy middle texture to backbuffer.
-	//m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_COPY_SOURCE, mainThreadCommandListPost);
-	//currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_COPY_DEST, mainThreadCommandListPost);
-	//mainThreadCommandListPost->CopyResource(currentBackBuffer.Get(), m_middleTexture.Get());
-
-	// Prepare backbuffer for present
-	currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_PRESENT, mainThreadCommandListPost);
-
-	// Close post command list.
-	mainThreadCommandListPost->Close() >> CHK_HR;
 
 	// Add post command list to list of command lists.
 	commandLists.push_back(mainThreadCommandListPost);
 
 	// Execute all command lists.
 	{
-		//for (UINT i = 0; i < commandLists.size(); i++)
-		//{
-		//	ID3D12CommandList* const* commandListsRaw = commandLists[i].GetAddressOf();
-		//	m_directCommandQueue->commandQueue->ExecuteCommandLists(1, commandListsRaw);
-		//	m_directCommandQueue->SignalAndWait();
-		//}
-
 		ID3D12CommandList* const* commandListsRaw = commandLists[0].GetAddressOf();
 		m_directCommandQueue->commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
 	}
@@ -506,8 +511,8 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 	ComPtr<IDXGIFactory4> factory;
 	{
 		UINT dxgiFactoryFlags = 0;
-//TODO: Add back that this only happens on debug mode.
-//#if defined(_DEBUG) 
+
+#if defined(_DEBUG) 
 		// Enables debug layer.
 		ComPtr<ID3D12Debug1> debugController;
 		D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)) >> CHK_HR;
@@ -516,7 +521,7 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 
 		// Additional debug layer options.
 		dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-//#endif
+#endif
 
 		CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)) >> CHK_HR;
 	}
@@ -564,10 +569,8 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 
 	// Create command queues.
 	{
-		//m_directCommandQueue = CommandQueueHandler(m_device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
-		//m_copyCommandQueue = CommandQueueHandler(m_device.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
-
 		m_directCommandQueue = std::make_unique<CommandQueueHandler>(m_device.Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
+		m_computeCommandQueue = std::make_unique<CommandQueueHandler>(m_device.Get(), D3D12_COMMAND_LIST_TYPE_COMPUTE);
 		m_copyCommandQueue = std::make_unique<CommandQueueHandler>(m_device.Get(), D3D12_COMMAND_LIST_TYPE_COPY);
 	}
 
@@ -1089,6 +1092,7 @@ void DX12Renderer::CreatePSOs()
 {
 	RegisterRenderPass(RenderPassType::DeferredGBufferPass);
 	RegisterRenderPass(RenderPassType::DeferredLightingPass);
+	RegisterRenderPass(RenderPassType::RaytracedAOPass);
 	RegisterRenderPass(RenderPassType::AccumulationPass);
 }
 
@@ -1198,34 +1202,25 @@ void DX12Renderer::CreateRenderInstances()
 
 		RenderInstance renderInstance = {};
 
-		//renderInstance.CBIndex = renderInstanceCount++;
-		//dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixRotationX(dx::XM_PIDIV2 * 0.34f) * dx::XMMatrixTranslation(0.0f, 0.0f, 0.0f));
-		//renderInstances.push_back(renderInstance);
-
 		int offset = 2;
-		float scale = 3.f;
-		for (int x = 0; x < 5; x++)
+		float scale = 3.0f;
+		
+		int maxZ = 3;
+		int maxYX = 5;
+		for (int z = 0; z < maxZ; z++)
 		{
-			for (int y = 0; y < 5; y++)
+			float zPos = (z - (maxZ / 2)) * scale;
+			for (int x = 0; x < maxYX; x++)
 			{
-				
-				float xPos = (x - offset) * scale;
-				float yPos = (y - offset) * scale;
-				renderInstance.CBIndex = renderInstanceCount++;
-				dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(xPos, yPos, 0.0f));
-				renderInstances.push_back(renderInstance);
-			}
-		}
-
-		for (int x = 0; x < 5; x++)
-		{
-			for (int y = 0; y < 5; y++)
-			{
-				float xPos = (x - offset) * scale;
-				float yPos = (y - offset) * scale;
-				renderInstance.CBIndex = renderInstanceCount++;
-				dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(xPos, yPos, -5.0f));
-				renderInstances.push_back(renderInstance);
+				float xPos = (x - (maxYX / 2)) * scale;
+				for (int y = 0; y < maxYX; y++)
+				{
+					float yPos = (y - (maxYX / 2)) * scale;
+					
+					renderInstance.CBIndex = renderInstanceCount++;
+					dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(xPos, yPos, zPos));
+					renderInstances.push_back(renderInstance);
+				}
 			}
 		}
 	}
@@ -1562,8 +1557,7 @@ void DX12Renderer::CreateRaytracingPipelineState()
 
 	m_device->CreateStateObject(&desc, IID_PPV_ARGS(&m_RTPipelineState)) >> CHK_HR;
 
-	// TODO: Make this a more correct way of registering passes.
-	RegisterRenderPass(RaytracedAOPass);
+	
 }
 
 
@@ -1972,6 +1966,14 @@ void DX12Renderer::ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList)
 	}
 }
 
+void DX12Renderer::TransitionGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList, D3D12_RESOURCE_STATES newResourceState)
+{
+	for (GPUResource& gBuffer : m_gBuffers)
+	{
+		gBuffer.TransitionTo(newResourceState, commandList);
+	}
+}
+
 RenderObject DX12Renderer::CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<VertexIndex>* indices, D3D12_PRIMITIVE_TOPOLOGY topology)
 {
 	RenderObject renderObject;
@@ -2161,7 +2163,7 @@ CommandQueueHandler::CommandQueueHandler()
 
 CommandQueueHandler::~CommandQueueHandler()
 {
-	if(m_eventHandle)
+	if (m_eventHandle)
 		CloseHandle(m_eventHandle);
 }
 
@@ -2169,9 +2171,9 @@ ComPtr<ID3D12GraphicsCommandList4> CommandQueueHandler::CreateCommandList(ComPtr
 {
 	ComPtr<ID3D12GraphicsCommandList4> commandList;
 	device->CreateCommandList1(
-		0, 
-		m_type, 
-		flags, 
+		0,
+		m_type,
+		flags,
 		IID_PPV_ARGS(&commandList)
 	) >> CHK_HR;
 
@@ -2211,7 +2213,10 @@ void CommandQueueHandler::Wait()
 	if (m_fence->GetCompletedValue() < m_fenceValue)
 	{
 		m_fence->SetEventOnCompletion(m_fenceValue, m_eventHandle) >> CHK_HR;
-		WaitForSingleObject(m_eventHandle, INFINITE);
+		if(WaitForSingleObject(m_eventHandle, CommandQueueHandler::MaxWaitTimeMS) != WAIT_OBJECT_0)
+		{
+			throw std::runtime_error("ERROR: Fence wait timed out.");
+		}
 	}
 }
 
