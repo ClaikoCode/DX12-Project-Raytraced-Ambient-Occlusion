@@ -84,8 +84,6 @@ public:
 	void Update();
 	void Render();
 
-	
-
 private:
 
 	DX12Renderer(UINT width, UINT height, HWND windowHandle);

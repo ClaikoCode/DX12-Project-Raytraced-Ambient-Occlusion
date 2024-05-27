@@ -59,7 +59,7 @@ constexpr std::array<DXGI_FORMAT, GBufferIDCount> GBufferFormats = { DXGI_FORMAT
 
 // The maximum number of instances that can be rendered in a single draw call.
 constexpr uint32_t MaxRenderInstances = 100u;
-constexpr uint32_t MaxRTInstancesPerTopLevel = 50u;
+constexpr uint32_t MaxRTInstancesPerTopLevel = 100u;
 
 constexpr uint32_t MaxRTVDescriptors = (20u) * BackBufferCount;
 // This should be below the sum of all the descriptors for this type of descriptor.

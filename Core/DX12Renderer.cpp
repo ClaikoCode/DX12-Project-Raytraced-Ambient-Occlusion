@@ -193,7 +193,7 @@ void DX12Renderer::Render()
 	dsvHandle.Offset(currentFrameIndex, m_dsvDescriptorSize); //TODONOW: Fix proper offset.
 
 	//std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
-	std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass, DeferredLightingPass };
+	std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass };
 
 	// Pre render pass setup.
 	{
@@ -377,12 +377,25 @@ void DX12Renderer::Render()
 						commandList->ResourceBarrier(1, &uavBarrier);
 					}
 
-					renderPassArgs = RaytracedAORenderPassArgs {
+					std::vector<RayTracingRenderPackage> rayTracingRenderPackages;
+					for (RenderObjectID renderObjectID : passObjectIDs)
+					{
+						RayTracingRenderPackage rtRenderPackage;
+
+						rtRenderPackage.topLevelASBuffers = &m_currentFrameResource->topAccStructByID[renderObjectID];
+						rtRenderPackage.instanceCount = m_renderInstancesByID[renderObjectID].size();
+
+						rayTracingRenderPackages.push_back(rtRenderPackage);
+					}
+
+					
+					renderPassArgs = RaytracedAORenderPassArgs{
 						.commonRTArgs = commonRTArgs,
 						.stateObject = m_RTPipelineState,
 						.frameCount = m_frameCount,
 						.screenWidth = m_width,
 						.screenHeight = m_height,
+						.renderPackages = rayTracingRenderPackages
 					};
 
 					if (isLastRenderPass && context == 0)
@@ -957,9 +970,6 @@ void FrameResource::CreateCBVs(ComPtr<ID3D12Device5> device, ComPtr<ID3D12Descri
 		device->CreateConstantBufferView(&cbvDesc, globalFrameDataCBVHandle);
 	}
 }
-
-
-
 
 void FrameResource::CreateSRVs(ComPtr<ID3D12Device5> device, ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeap, UINT cbvSrvUavDescriptorSize)
 {
