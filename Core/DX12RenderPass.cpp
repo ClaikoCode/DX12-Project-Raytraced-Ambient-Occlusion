@@ -468,9 +468,9 @@ RaytracedAORenderPass::RaytracedAORenderPass(ComPtr<ID3D12Device5> device, ComPt
 
 void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
-	// TODO: This is a temporary fix to not forget that this will not work for more contexts.
-	assert(context == 0);
-	if (context != 0)
+	// TODO: This feels like a hack. 
+	// Maybe there is a more official way to handle this (single thread flag?).
+	if (context != 0)  
 		return;
 
 	assert(pipelineArgs != nullptr);

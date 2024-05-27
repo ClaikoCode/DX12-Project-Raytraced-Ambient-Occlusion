@@ -14,7 +14,7 @@
 constexpr const char* AssetsPath = "../../../../assets/";
 
 // The number of contexts that the program uses.
-constexpr uint32_t NumContexts = 1u;
+constexpr uint32_t NumContexts = 2u;
 
 // How many back back buffers the program uses.
 constexpr UINT BackBufferCount = 2;

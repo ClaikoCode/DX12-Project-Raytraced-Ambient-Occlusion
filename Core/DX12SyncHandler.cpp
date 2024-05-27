@@ -4,6 +4,7 @@ SyncHandles::SyncHandles()
 {
 	for (UINT i = 0; i < NumContexts; i++)
 	{
+		// Create handle that is not signaled or auto-reset.
 		handles[i] = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
 		// Assert that the event was created successfully.
@@ -80,6 +81,14 @@ void DX12SyncHandler::WaitPassAll(RenderPassType passType)
 void DX12SyncHandler::SetStart(UINT context)
 {
 	SetEvent(startSync->Get(context));
+}
+
+void DX12SyncHandler::SetStartAll()
+{
+	for (UINT i = 0; i < NumContexts; i++)
+	{
+		SetStart(i);
+	}
 }
 
 void DX12SyncHandler::SetEnd(UINT context)

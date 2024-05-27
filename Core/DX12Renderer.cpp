@@ -8,6 +8,8 @@
 #include "AppDefines.h"
 #include "tiny_obj_loader.h"
 
+//#define SINGLE_THREAD
+
 using namespace DX12Abstractions;
 namespace dx = DirectX;
 
@@ -18,7 +20,10 @@ static std::vector<RenderPassType> sPassesToRegister = {
 	RenderPassType::AccumulationPass
 };
 
-static 	std::vector<RenderObjectID> sRTRenderObjectIDs = { RenderObjectID::Cube };
+static std::vector<RenderObjectID> sRTRenderObjectIDs = { RenderObjectID::Cube };
+
+static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass };
+//static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
 
 bool HasRenderPass(std::vector<RenderPassType>& renderPassOrder, const RenderPassType pass)
 {
@@ -176,7 +181,7 @@ void DX12Renderer::Render()
 	GPUResource& currentBackBuffer = m_backBuffers[currentFrameIndex];
 
 	// Get RTV handle for the current back buffer.
-	const CD3DX12_CPU_DESCRIPTOR_HANDLE bbRTV (
+	const CD3DX12_CPU_DESCRIPTOR_HANDLE bbRTV(
 		m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
 		GlobalDescriptors::GetDescriptorOffset(RTVBackBuffers) + currentFrameIndex,
 		m_rtvDescriptorSize
@@ -191,9 +196,6 @@ void DX12Renderer::Render()
 	// Get DSV handle.
 	CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(m_dsvHeapGlobal->GetCPUDescriptorHandleForHeapStart());
 	dsvHandle.Offset(GlobalDescriptors::GetDescriptorOffset(DSVScene), m_dsvDescriptorSize);
-
-	static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass };
-	//static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
 
 	// Pre render pass setup.
 	{
@@ -242,215 +244,30 @@ void DX12Renderer::Render()
 		m_renderPasses[renderPass]->Init(currentFrameIndex);
 	}
 
-	// Set start sync.
-	for (UINT context = 0; context < NumContexts; context++)
-	{
-		m_currentFrameResource->syncHandler.SetStart(context);
-	}
+	// Start all render passes.
+	m_syncHandler.SetStartAll();	
 
-	// Common args for all passes.
-	CommonRenderPassArgs commonArgs = {
-		dsvHandle,
-		m_rasterRootSignature,
-		m_viewport,
-		m_scissorRect,
-		m_cbvSrvUavHeapGlobal,
-		m_cbvSrvUavDescriptorSize,
-		m_currentFrameResource->globalFrameDataCB,
-		m_activeCamera->GetViewProjectionMatrix()
-	};
-
-	CommonRaytracingRenderPassArgs commonRTArgs = {
-		.cbvSrvUavHeap = m_cbvSrvUavHeapGlobal,
-		.cbvSrvUavDescSize = m_cbvSrvUavDescriptorSize,
-
-		.globalRootSig = m_RTGlobalRootSignature,
-
-		.rayGenShaderTable = &m_currentFrameResource->rayGenShaderTable,
-		.hitGroupShaderTable = &m_currentFrameResource->hitGroupShaderTable,
-		.missShaderTable = &m_currentFrameResource->missShaderTable
-	};
-
+#if defined(SINGLE_THREAD)
 	// This is supposed to be ran by different threads.
 	for (UINT context = 0; context < NumContexts; context++)
 	{
-		// Wait for start sync.
-		m_currentFrameResource->syncHandler.WaitStart(context);
-
-		for (UINT passIndex = 0; passIndex < sRenderPassOrder.size(); passIndex++)
-		{
-			bool isLastRenderPass = passIndex == (sRenderPassOrder.size() - 1);
-
-			RenderPassType renderPassType = sRenderPassOrder[passIndex];
-			DX12RenderPass& renderPass = *m_renderPasses[renderPassType];
-
-			const std::vector<RenderObjectID>& passObjectIDs = renderPass.GetRenderableObjects();
-
-			// Build render packages to send to render.
-			std::vector<RenderPackage> renderPackages;
-			for (RenderObjectID renderID : passObjectIDs)
-			{
-				RenderObject& renderObject = m_renderObjectsByID[renderID];
-				std::vector<RenderInstance>& instances = m_renderInstancesByID[renderID];
-
-				RenderPackage renderPackage = {
-					.renderObject = &renderObject,
-					.renderInstances = &instances
-				};
-
-				renderPackages.push_back(std::move(renderPackage));
-			}
-
-			// Only try to render if there actually is anything to render.
-			// If the render pass does not have any objects at all then it is assumed it doesn't need them to fulfill its task.
-			// Dont render if its disabled.
-			if ((renderPackages.size() > 0 || passObjectIDs.size() == 0) && renderPass.IsEnabled())
-			{
-				RenderPassArgs renderPassArgs;
-
-				if (renderPassType == NonIndexedPass)
-				{
-					renderPassArgs = NonIndexedRenderPassArgs{
-						.commonArgs = commonArgs,
-						.RTV = bbRTV
-					};
-				}
-				else if (renderPassType == IndexedPass)
-				{
-					renderPassArgs = IndexedRenderPassArgs{
-						.commonArgs = commonArgs,
-						.RTV = bbRTV
-					};
-				}
-				else if (renderPassType == DeferredGBufferPass)
-				{
-					// Get RTV handle for the first GBuffer.
-					const CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle(
-						m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
-						GlobalDescriptors::GetDescriptorOffset(RTVGBuffers),
-						m_rtvDescriptorSize
-					);
-
-					renderPassArgs = DeferredGBufferRenderPassArgs {
-						.commonArgs = commonArgs,
-						.firstGBufferRTVHandle = firstGBufferRTVHandle
-					};
-				}
-				else if(renderPassType == DeferredLightingPass)
-				{
-					if (context == 0)
-					{
-						auto commandList = renderPass.GetFirstCommandList(currentFrameIndex);
-
-						D3D12_RESOURCE_STATES gBufferResourceState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-						// Using the concept of better resource transitions depending on what type of render pipeline we have.
-						// If we know that a raytraced AO pass will come, we make sure that it also can be used outside of a pixel shader.
-						if (HasRenderPass(sRenderPassOrder, RaytracedAOPass))
-						{
-							gBufferResourceState |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-						}
-
-						// Resource barrier for g buffers.
-						TransitionGBuffers(commandList, gBufferResourceState);
-
-						// If this is the last render pass we make the middle texture as final output instead.
-						if(isLastRenderPass)
-							m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, commandList);
-					}
-
-					renderPassArgs = DeferredLightingRenderPassArgs {
-						.commonArgs = commonArgs,
-						.RTV = isLastRenderPass ? bbRTV : middleTextureRTV
-					};
-				}
-				else if (renderPassType == RaytracedAOPass)
-				{
-					if (context == 0)
-					{
-						auto commandList = renderPass.GetFirstCommandList(currentFrameIndex);
-
-						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList);
-						
-						// Put resource barrier.
-						CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_middleTexture.Get());
-						commandList->ResourceBarrier(1, &uavBarrier);
-					}
-
-					std::vector<RayTracingRenderPackage> rayTracingRenderPackages;
-					for (RenderObjectID renderObjectID : passObjectIDs)
-					{
-						RayTracingRenderPackage rtRenderPackage;
-
-						rtRenderPackage.topLevelASBuffers = &m_currentFrameResource->topAccStructByID[renderObjectID];
-						rtRenderPackage.instanceCount = (UINT)m_renderInstancesByID[renderObjectID].size();
-
-						rayTracingRenderPackages.push_back(rtRenderPackage);
-					}
-
-					
-					renderPassArgs = RaytracedAORenderPassArgs{
-						.commonRTArgs = commonRTArgs,
-						.stateObject = m_RTPipelineState,
-						.frameCount = m_frameCount,
-						.screenWidth = m_width,
-						.screenHeight = m_height,
-						.renderPackages = rayTracingRenderPackages
-					};
-
-					if (isLastRenderPass && context == 0)
-					{
-						// Copy middle texture to back buffer.
-						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_COPY_SOURCE, postCommandList);
-						currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_COPY_DEST, postCommandList);
-						postCommandList->CopyResource(currentBackBuffer.Get(), m_middleTexture.Get());
-					}
-				}
-				else if (renderPassType == AccumulationPass)
-				{
-					if (context == 0)
-					{
-						auto commandList = renderPass.GetFirstCommandList(currentFrameIndex);
-
-						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, commandList);
-
-						// Put uav barrier before use.
-						CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_accumulationTexture.Get());
-						commandList->ResourceBarrier(1, &uavBarrier);
-					}
-
-					renderPassArgs = AccumulationRenderPassArgs {
-						.commonArgs = commonArgs,
-						.RTVTargetFrame = bbRTV
-					};
-
-					if (context == 0)
-					{
-						static const float frequency = 1.0f;
-						//m_accumulatedFrames = (1u * (UINT)(m_time * frequency));
-						m_accumulatedFrames += 1;
-					}
-				}
-				else
-				{
-					throw std::runtime_error("Unknown render pass type.");
-				}
-
-
-				// Render all render packages.
-				renderPass.Render(renderPackages, context, currentFrameIndex, &renderPassArgs);
-			}
-
-			// Signal that pass is done.
-			m_currentFrameResource->syncHandler.SetPass(context, renderPassType);
-			m_renderPasses[renderPassType]->Close(currentFrameIndex, context);
-		}
-
-		// Signal end sync.
-		m_currentFrameResource->syncHandler.SetEnd(context);
+		BuildRenderPass(context);
 	}
+#endif
 
 	// Wait for all passes to finish on the CPU.
-	m_currentFrameResource->syncHandler.WaitEndAll();
+	m_syncHandler.WaitEndAll();
+
+	if (HasRenderPass(sRenderPassOrder, RaytracedAOPass))
+	{
+		if (sRenderPassOrder.back() == RaytracedAOPass)
+		{
+			// Copy middle texture to back buffer.
+			m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_COPY_SOURCE, postCommandList);
+			currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_COPY_DEST, postCommandList);
+			postCommandList->CopyResource(currentBackBuffer.Get(), m_middleTexture.Get());
+		}
+	}
 
 	// Prepare back buffer for present.
 	currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_PRESENT, postCommandList);
@@ -495,6 +312,16 @@ DX12Renderer::~DX12Renderer()
 	m_directCommandQueue->SignalAndWait();
 	m_copyCommandQueue->SignalAndWait();
 
+	m_forceExitThread = true;
+	m_syncHandler.SetStartAll();
+	for (std::thread& thread : m_threadWorkers)
+	{
+		if (thread.joinable())
+		{
+			thread.join();
+		}	
+	}
+
 	s_instance = nullptr;
 }
 
@@ -505,7 +332,14 @@ DX12Renderer::DX12Renderer(UINT width, UINT height, HWND windowHandle) :
 	m_windowHandle(windowHandle),
 	m_scissorRect(0, 0, static_cast<LONG>(width), static_cast<LONG>(height)),
 	m_viewport(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height)),
-	m_rtvDescriptorSize(0)
+	m_rtvDescriptorSize(0),
+	m_dsvDescriptorSize(0),
+	m_cbvSrvUavDescriptorSize(0),
+	m_syncHandler({}),
+	m_frameCount(0),
+	m_accumulatedFrames(0),
+	m_time(0.0f),
+	m_forceExitThread(false)
 {
 	s_instance = this;
 
@@ -513,6 +347,10 @@ DX12Renderer::DX12Renderer(UINT width, UINT height, HWND windowHandle) :
 	InitAssets();
 	InitRaytracing();
 	InitFrameResources();
+
+#if !defined(SINGLE_THREAD)
+	InitThreads();
+#endif
 }
 
 
@@ -1005,7 +843,7 @@ void DX12Renderer::CreateSRVs()
 
 
 FrameResource::FrameResource(UINT frameIndex, ComPtr<ID3D12Resource> backBuffer, FrameResourceInputs inputs)
-	: syncHandler(), fenceValue(0), m_frameIndex(frameIndex)
+	: fenceValue(0), m_frameIndex(frameIndex)
 {
 	const UINT width = (UINT)inputs.viewPort.Width;
 	const UINT height = (UINT)inputs.viewPort.Height;
@@ -1046,7 +884,7 @@ void DX12Renderer::CreateUAVs()
 void DX12Renderer::InitAssets()
 {
 	CreateRootSignatures();
-	CreatePSOs();
+	RegisterRenderPasses();
 	CreateRenderObjects();
 	CreateCamera();
 	CreateRenderInstances();
@@ -1128,11 +966,12 @@ void DX12Renderer::CreateRootSignatures()
 	NAME_D3D12_OBJECT_MEMBER(m_rasterRootSignature, DX12Renderer);
 }
 
-void DX12Renderer::CreatePSOs()
+void DX12Renderer::RegisterRenderPasses()
 {
 	for (RenderPassType passType : sPassesToRegister)
 	{
 		RegisterRenderPass(passType);
+		m_syncHandler.AddUniquePassSync(passType);
 	}
 }
 
@@ -1673,17 +1512,6 @@ void DX12Renderer::InitFrameResources()
 		m_frameResources[frameIndex] = std::make_unique<FrameResource>(frameIndex, m_backBuffers[frameIndex], inputs);
 	}
 
-	for (RenderPassType passType : sPassesToRegister)
-	{
-		// Register render passes to all sync handlers.
-		for (UINT i = 0; i < m_frameResources.size(); i++)
-		{
-			FrameResource* frameResource = m_frameResources[i].get();
-
-			frameResource->syncHandler.AddUniquePassSync(passType);
-		}
-	}
-
 	m_currentFrameResource = m_frameResources[0].get();
 }
 
@@ -1895,6 +1723,234 @@ void DX12Renderer::UpdateCamera()
 	m_activeCamera->UpdateViewProjectionMatrix();
 }
 
+void DX12Renderer::BuildRenderPass(UINT context)
+{
+	bool validContext = context < NumContexts;
+	assert(validContext);
+
+#if !defined(SINGLE_THREAD)
+	while (validContext) // This looks like a busy wait but right below it will idle wait until woken up.
+	{
+#endif
+		// Wait for start sync.
+		m_syncHandler.WaitStart(context);
+
+		if (m_forceExitThread)
+		{
+			break;
+		}
+
+		UINT currentFrameIndex = m_currentFrameResource->GetFrameIndex();
+
+		// Get RTV handle for the current back buffer.
+		const CD3DX12_CPU_DESCRIPTOR_HANDLE bbRTV(
+			m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
+			GlobalDescriptors::GetDescriptorOffset(RTVBackBuffers) + currentFrameIndex,
+			m_rtvDescriptorSize
+		);
+
+		const CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureRTV(
+			m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
+			GlobalDescriptors::GetDescriptorOffset(RTVMiddleTexture),
+			m_rtvDescriptorSize
+		);
+
+		// Common args for all passes.
+		CommonRenderPassArgs commonArgs = {
+			.depthStencilView = CD3DX12_CPU_DESCRIPTOR_HANDLE(
+				m_dsvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
+				GlobalDescriptors::GetDescriptorOffset(DSVScene),
+				m_dsvDescriptorSize
+			),
+			.rootSignature = m_rasterRootSignature,
+			.viewport = m_viewport,
+			.scissorRect = m_scissorRect,
+
+			.cbvSrvUavHeapGlobal = m_cbvSrvUavHeapGlobal,
+			.cbvSrvUavDescSize = m_cbvSrvUavDescriptorSize,
+
+			.globalFrameDataResource = m_currentFrameResource->globalFrameDataCB,
+			.viewProjectionMatrix = m_activeCamera->GetViewProjectionMatrix()
+		};
+
+		CommonRaytracingRenderPassArgs commonRTArgs = {
+			.cbvSrvUavHeap = m_cbvSrvUavHeapGlobal,
+			.cbvSrvUavDescSize = m_cbvSrvUavDescriptorSize,
+
+			.globalRootSig = m_RTGlobalRootSignature,
+
+			.rayGenShaderTable = &m_currentFrameResource->rayGenShaderTable,
+			.hitGroupShaderTable = &m_currentFrameResource->hitGroupShaderTable,
+			.missShaderTable = &m_currentFrameResource->missShaderTable
+		};
+
+		for (UINT passIndex = 0; passIndex < sRenderPassOrder.size(); passIndex++)
+		{
+			bool isLastRenderPass = passIndex == (sRenderPassOrder.size() - 1);
+
+			RenderPassType renderPassType = sRenderPassOrder[passIndex];
+			DX12RenderPass& renderPass = *m_renderPasses[renderPassType];
+
+			const std::vector<RenderObjectID>& passObjectIDs = renderPass.GetRenderableObjects();
+
+			// Build render packages to send to render.
+			std::vector<RenderPackage> renderPackages;
+			for (RenderObjectID renderID : passObjectIDs)
+			{
+				RenderObject& renderObject = m_renderObjectsByID[renderID];
+				std::vector<RenderInstance>& instances = m_renderInstancesByID[renderID];
+
+				RenderPackage renderPackage = {
+					.renderObject = &renderObject,
+					.renderInstances = &instances
+				};
+
+				renderPackages.push_back(std::move(renderPackage));
+			}
+
+			// Only try to render if there actually is anything to render.
+			// If the render pass does not have any objects at all then it is assumed it doesn't need them to fulfill its task.
+			// Dont render if its disabled.
+			if ((renderPackages.size() > 0 || passObjectIDs.size() == 0) && renderPass.IsEnabled())
+			{
+				RenderPassArgs renderPassArgs;
+
+				if (renderPassType == NonIndexedPass)
+				{
+					renderPassArgs = NonIndexedRenderPassArgs{
+						.commonArgs = commonArgs,
+						.RTV = bbRTV
+					};
+				}
+				else if (renderPassType == IndexedPass)
+				{
+					renderPassArgs = IndexedRenderPassArgs{
+						.commonArgs = commonArgs,
+						.RTV = bbRTV
+					};
+				}
+				else if (renderPassType == DeferredGBufferPass)
+				{
+					// Get RTV handle for the first GBuffer.
+					const CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle(
+						m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
+						GlobalDescriptors::GetDescriptorOffset(RTVGBuffers),
+						m_rtvDescriptorSize
+					);
+
+					renderPassArgs = DeferredGBufferRenderPassArgs{
+						.commonArgs = commonArgs,
+						.firstGBufferRTVHandle = firstGBufferRTVHandle
+					};
+				}
+				else if (renderPassType == DeferredLightingPass)
+				{
+					if (context == 0)
+					{
+						auto commandList = renderPass.GetFirstCommandList(currentFrameIndex);
+
+						D3D12_RESOURCE_STATES gBufferResourceState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+						// Using the concept of better resource transitions depending on what type of render pipeline we have.
+						// If we know that a raytraced AO pass will come, we make sure that it also can be used outside of a pixel shader.
+						if (HasRenderPass(sRenderPassOrder, RaytracedAOPass))
+						{
+							gBufferResourceState |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+						}
+
+						// Resource barrier for g buffers.
+						TransitionGBuffers(commandList, gBufferResourceState);
+
+						// If this is the last render pass we make the middle texture as final output instead.
+						if (isLastRenderPass)
+							m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, commandList);
+					}
+
+					renderPassArgs = DeferredLightingRenderPassArgs{
+						.commonArgs = commonArgs,
+						.RTV = isLastRenderPass ? bbRTV : middleTextureRTV
+					};
+				}
+				else if (renderPassType == RaytracedAOPass)
+				{
+					if (context == 0)
+					{
+						auto commandList = renderPass.GetFirstCommandList(currentFrameIndex);
+
+						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList);
+
+						// Put resource barrier.
+						CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_middleTexture.Get());
+						commandList->ResourceBarrier(1, &uavBarrier);
+					}
+
+					std::vector<RayTracingRenderPackage> rayTracingRenderPackages;
+					for (RenderObjectID renderObjectID : passObjectIDs)
+					{
+						RayTracingRenderPackage rtRenderPackage;
+
+						rtRenderPackage.topLevelASBuffers = &m_currentFrameResource->topAccStructByID[renderObjectID];
+						rtRenderPackage.instanceCount = (UINT)m_renderInstancesByID[renderObjectID].size();
+
+						rayTracingRenderPackages.push_back(rtRenderPackage);
+					}
+
+					renderPassArgs = RaytracedAORenderPassArgs{
+						.commonRTArgs = commonRTArgs,
+						.stateObject = m_RTPipelineState,
+						.frameCount = m_frameCount,
+						.screenWidth = m_width,
+						.screenHeight = m_height,
+						.renderPackages = rayTracingRenderPackages
+					};
+				}
+				else if (renderPassType == AccumulationPass)
+				{
+					if (context == 0)
+					{
+						auto commandList = renderPass.GetFirstCommandList(currentFrameIndex);
+
+						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, commandList);
+
+						// Put uav barrier before use.
+						CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_accumulationTexture.Get());
+						commandList->ResourceBarrier(1, &uavBarrier);
+					}
+
+					renderPassArgs = AccumulationRenderPassArgs{
+						.commonArgs = commonArgs,
+						.RTVTargetFrame = bbRTV
+					};
+
+					if (context == 0)
+					{
+						static const float frequency = 1.0f;
+						//m_accumulatedFrames = (1u * (UINT)(m_time * frequency));
+						m_accumulatedFrames += 1;
+					}
+				}
+				else
+				{
+					throw std::runtime_error("Unknown render pass type.");
+				}
+
+
+				// Render all render packages.
+				renderPass.Render(renderPackages, context, currentFrameIndex, &renderPassArgs);
+			}
+
+			// Signal that pass is done.
+			m_syncHandler.SetPass(context, renderPassType);
+			m_renderPasses[renderPassType]->Close(currentFrameIndex, context);
+		}
+
+		// Signal end sync.
+		m_syncHandler.SetEnd(context);
+
+#if !defined(SINGLE_THREAD)
+	}
+#endif
+}
+
 void FrameResource::UpdateInstanceConstantBuffers(const FrameResourceUpdateInputs& inputs)
 {
 	// Copy through byte offsets.
@@ -1997,6 +2053,16 @@ void DX12Renderer::RegisterRenderPass(const RenderPassType renderPassType)
 		break;
 	}
 
+}
+
+void DX12Renderer::InitThreads()
+{
+#if !defined(SINGLE_THREAD)
+	for (UINT i = 0; i < NumContexts; i++)
+	{
+		m_threadWorkers[i] = std::thread(&DX12Renderer::BuildRenderPass, this, i);
+	}
+#endif
 }
 
 void DX12Renderer::ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList)
