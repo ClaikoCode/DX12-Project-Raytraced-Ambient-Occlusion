@@ -190,10 +190,10 @@ void DX12Renderer::Render()
 
 	// Get DSV handle.
 	CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(m_dsvHeapGlobal->GetCPUDescriptorHandleForHeapStart());
-	dsvHandle.Offset(GlobalDescriptors::GetDescriptorOffset(DSVScene), m_dsvDescriptorSize); //TODONOW: Fix proper offset.
+	dsvHandle.Offset(GlobalDescriptors::GetDescriptorOffset(DSVScene), m_dsvDescriptorSize);
 
-	std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
-	//std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass };
+	static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass };
+	//static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
 
 	// Pre render pass setup.
 	{
@@ -212,7 +212,7 @@ void DX12Renderer::Render()
 		}
 
 		// Setup gbuffers.
-		if (HasRenderPass(renderPassOrder, RenderPassType::DeferredGBufferPass))
+		if (HasRenderPass(sRenderPassOrder, RenderPassType::DeferredGBufferPass))
 		{
 			TransitionGBuffers(preCommandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
 			ClearGBuffers(preCommandList);
@@ -237,7 +237,7 @@ void DX12Renderer::Render()
 	}
 
 	// Initialize all render passes (resetting).
-	for (auto& renderPass : renderPassOrder)
+	for (auto& renderPass : sRenderPassOrder)
 	{
 		m_renderPasses[renderPass]->Init(currentFrameIndex);
 	}
@@ -277,11 +277,11 @@ void DX12Renderer::Render()
 		// Wait for start sync.
 		m_currentFrameResource->syncHandler.WaitStart(context);
 
-		for (UINT passIndex = 0; passIndex < renderPassOrder.size(); passIndex++)
+		for (UINT passIndex = 0; passIndex < sRenderPassOrder.size(); passIndex++)
 		{
-			bool isLastRenderPass = passIndex == (renderPassOrder.size() - 1);
+			bool isLastRenderPass = passIndex == (sRenderPassOrder.size() - 1);
 
-			RenderPassType renderPassType = renderPassOrder[passIndex];
+			RenderPassType renderPassType = sRenderPassOrder[passIndex];
 			DX12RenderPass& renderPass = *m_renderPasses[renderPassType];
 
 			const std::vector<RenderObjectID>& passObjectIDs = renderPass.GetRenderableObjects();
@@ -345,7 +345,7 @@ void DX12Renderer::Render()
 						D3D12_RESOURCE_STATES gBufferResourceState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 						// Using the concept of better resource transitions depending on what type of render pipeline we have.
 						// If we know that a raytraced AO pass will come, we make sure that it also can be used outside of a pixel shader.
-						if (HasRenderPass(renderPassOrder, RaytracedAOPass))
+						if (HasRenderPass(sRenderPassOrder, RaytracedAOPass))
 						{
 							gBufferResourceState |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 						}
@@ -459,7 +459,7 @@ void DX12Renderer::Render()
 	postCommandList->Close() >> CHK_HR;
 
 	// Add all command lists to the main command list.
-	for (RenderPassType renderPass : renderPassOrder)
+	for (RenderPassType renderPass : sRenderPassOrder)
 	{
 		for (UINT context = 0; context < NumContexts; context++)
 		{
@@ -1884,8 +1884,8 @@ void DX12Renderer::UpdateCamera()
 {
 	// Update camera before rendering.
 	dx::XMVECTOR startPos = dx::XMVectorSet(0.0f, 0.0f, -13.0f, 1.0f);
-	//float angle = m_time * dx::XM_2PI / 20.0f;
-	float angle = 0.0f;
+	float angle = m_time * dx::XM_2PI / 20.0f;
+	//float angle = 0.0f;
 	
 	dx::XMMATRIX rotationMatrix = dx::XMMatrixRotationNormal(dx::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), angle);
 	dx::XMVECTOR newPos = dx::XMVector3Transform(startPos, rotationMatrix);
