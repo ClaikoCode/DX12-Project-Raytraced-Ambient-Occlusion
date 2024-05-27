@@ -22,8 +22,8 @@ static std::vector<RenderPassType> sPassesToRegister = {
 
 static std::vector<RenderObjectID> sRTRenderObjectIDs = { RenderObjectID::Cube };
 
-static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass };
-//static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
+//static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass };
+static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
 
 bool HasRenderPass(std::vector<RenderPassType>& renderPassOrder, const RenderPassType pass)
 {
@@ -276,13 +276,20 @@ void DX12Renderer::Render()
 	postCommandList->Close() >> CHK_HR;
 
 	// Add all command lists to the main command list.
+	UINT rtCommandListIndex = 0;
 	for (RenderPassType renderPass : sRenderPassOrder)
 	{
+		if (renderPass == RaytracedAOPass)
+		{
+			rtCommandListIndex = (UINT)commandLists.size();
+		}
+
+		const auto& renderPassPtr = m_renderPasses[renderPass];
 		for (UINT context = 0; context < NumContexts; context++)
 		{
-			if (m_renderPasses[renderPass]->IsEnabled())
+			if (renderPassPtr->IsEnabled())
 			{
-				commandLists.push_back(m_renderPasses[renderPass]->GetCommandList(context, currentFrameIndex));
+				commandLists.push_back(renderPassPtr->GetCommandList(context, currentFrameIndex));
 			}
 		}
 	}
@@ -291,10 +298,24 @@ void DX12Renderer::Render()
 	commandLists.push_back(postCommandList);
 
 	// Execute all command lists.
-	{
-		ID3D12CommandList* const* commandListsRaw = commandLists[0].GetAddressOf();
-		m_directCommandQueue->commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
-	}
+	//{
+	//	ID3D12CommandList* const* commandListsRaw = commandLists[0].GetAddressOf();
+	//	m_directCommandQueue->commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
+	//}
+
+	// Execute all command lists up to the raytracing pass.
+	m_directCommandQueue->ExecuteCommandLists(commandLists, rtCommandListIndex);
+	
+	// Make sure the raytracing pass waits for the previous passes to finish as it relies on the output of it.
+	m_computeCommandQueue->GPUWaitForOtherQueue(*m_directCommandQueue);
+	// Execute the raytracing pass.
+	m_computeCommandQueue->ExecuteCommandLists(commandLists, NumContexts, rtCommandListIndex);
+
+	// Wait yet again for the raytracing pass to finish.
+	m_directCommandQueue->GPUWaitForOtherQueue(*m_computeCommandQueue);
+	UINT finalIndex = (NumContexts + rtCommandListIndex);
+	// Execute final command lists.
+	m_directCommandQueue->ExecuteCommandLists(commandLists, commandLists.size() - finalIndex, finalIndex);
 
 	// Present
 	m_swapChain->Present(0, 0) >> CHK_HR;
@@ -1712,8 +1733,8 @@ void DX12Renderer::UpdateCamera()
 {
 	// Update camera before rendering.
 	dx::XMVECTOR startPos = dx::XMVectorSet(0.0f, 0.0f, -13.0f, 1.0f);
-	float angle = m_time * dx::XM_2PI / 20.0f;
-	//float angle = 0.0f;
+	//float angle = m_time * dx::XM_2PI / 20.0f;
+	float angle = 0.0f;
 	
 	dx::XMMATRIX rotationMatrix = dx::XMMatrixRotationNormal(dx::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), angle);
 	dx::XMVECTOR newPos = dx::XMVector3Transform(startPos, rotationMatrix);
@@ -1862,21 +1883,23 @@ void DX12Renderer::BuildRenderPass(UINT context)
 
 						// If this is the last render pass we make the middle texture as final output instead.
 						if (isLastRenderPass)
+						{
 							m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, commandList);
+						}	
 					}
 
 					renderPassArgs = DeferredLightingRenderPassArgs{
 						.commonArgs = commonArgs,
 						.RTV = isLastRenderPass ? bbRTV : middleTextureRTV
 					};
+
+					
 				}
 				else if (renderPassType == RaytracedAOPass)
 				{
 					if (context == 0)
 					{
 						auto commandList = renderPass.GetFirstCommandList(currentFrameIndex);
-
-						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList);
 
 						// Put resource barrier.
 						CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_middleTexture.Get());
@@ -1940,6 +1963,15 @@ void DX12Renderer::BuildRenderPass(UINT context)
 
 			// Signal that pass is done.
 			m_syncHandler.SetPass(context, renderPassType);
+
+			// TODO: This is super janky and should be fixed. 
+			// Find some way to solve the fact that a compute command list cant take a resource out of render target state.
+			if (!isLastRenderPass && sRenderPassOrder[passIndex + 1] == RaytracedAOPass)
+			{
+				auto lastCommandList = renderPass.GetLastCommandList(currentFrameIndex);
+				m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, lastCommandList);
+			}
+			
 			m_renderPasses[renderPassType]->Close(currentFrameIndex, context);
 		}
 
@@ -2305,6 +2337,11 @@ ID3D12CommandQueue* CommandQueueHandler::Get() const
 	return commandQueue.Get();
 }
 
+ComPtr<ID3D12Fence> CommandQueueHandler::GetFence() const
+{
+	return m_fence;
+}
+
 UINT64 CommandQueueHandler::GetCompletedFenceValue()
 {
 	return m_fence->GetCompletedValue();
@@ -2351,6 +2388,20 @@ void CommandQueueHandler::SignalAndWait()
 {
 	Signal();
 	WaitForLatestSignal();
+}
+
+void CommandQueueHandler::GPUWait(ComPtr<ID3D12Fence> fence, UINT64 fenceValue)
+{
+	commandQueue->Wait(fence.Get(), fenceValue) >> CHK_HR;
+}
+
+void CommandQueueHandler::GPUWaitForOtherQueue(CommandQueueHandler& otherQueue)
+{
+	// The other queue puts a signal on its own fence.
+	UINT64 otherFenceValue = otherQueue.Signal();
+
+	// Wait for that signal to be reached by the other queue.
+	GPUWait(otherQueue.GetFence(), otherFenceValue);
 }
 
 void CommandQueueHandler::ExecuteCommandLists(DX12Abstractions::CommandListVector& commandLists, UINT count /*= 0*/, const UINT offset /*= 0*/)
