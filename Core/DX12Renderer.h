@@ -5,6 +5,7 @@
 #include <array>
 #include <unordered_map>
 #include <memory>
+#include <thread>
 
 #include "GPUResource.h"
 #include "RenderObject.h"
@@ -112,7 +113,7 @@ private:
 
 	void InitAssets();
 	void CreateRootSignatures();
-	void CreatePSOs();
+	void RegisterRenderPasses();
 	void CreateRenderObjects();
 	void CreateCamera();
 	void CreateRenderInstances();
@@ -129,18 +130,19 @@ private:
 
 	void InitFrameResources();
 
-	void SerializeAndCreateRootSig(CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc, ComPtr<ID3D12RootSignature>& rootSig);
+	void RegisterRenderPass(const RenderPassType renderPassType);
+	void InitThreads();
 
 	void UpdateCamera();
+
+	void BuildRenderPass(UINT context);
 
 	void ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList);
 	void TransitionGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList, D3D12_RESOURCE_STATES newResourceState);
 
-	void RegisterRenderPass(const RenderPassType renderPassType);
-
 	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<VertexIndex>* indices, D3D12_PRIMITIVE_TOPOLOGY topology);
 	RenderObject CreateRenderObjectFromOBJ(const std::string& objPath, D3D12_PRIMITIVE_TOPOLOGY topology);
-
+	void SerializeAndCreateRootSig(CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc, ComPtr<ID3D12RootSignature>& rootSig);
 private:
 
 	UINT m_width;
@@ -185,6 +187,10 @@ private:
 
 	std::array<std::unique_ptr<FrameResource>, BackBufferCount> m_frameResources;
 	FrameResource* m_currentFrameResource;
+
+	std::array<std::thread, NumContexts> m_threadWorkers;
+	DX12SyncHandler m_syncHandler;
+	bool m_forceExitThread; // Used to make a thread jump out of its loop.
 
 	Camera* m_activeCamera;
 	std::vector<Camera> m_cameras;
@@ -247,8 +253,6 @@ private:
 	void UpdateTopLevelAccelerationStructure(const FrameResourceUpdateInputs& inputs, RenderObjectID objectID);
 	
 public:
-	DX12SyncHandler syncHandler;
-
 	GPUResource perInstanceCB; 
 	GPUResource globalFrameDataCB;
 

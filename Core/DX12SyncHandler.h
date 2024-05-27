@@ -42,6 +42,7 @@ public:
 	void WaitPassAll(RenderPassType passType);
 
 	void SetStart(UINT context);
+	void SetStartAll();
 	void SetEnd(UINT context);
 	void SetPass(UINT context, RenderPassType passType);
 
