@@ -12,7 +12,7 @@ struct CommonRenderPassArgs
 	CD3DX12_VIEWPORT viewport;
 	CD3DX12_RECT scissorRect;
 
-	ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeap;
+	ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeapGlobal;
 	UINT cbvSrvUavDescSize;
 
 	ComPtr<ID3D12Resource> globalFrameDataResource;

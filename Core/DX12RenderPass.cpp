@@ -19,7 +19,9 @@ void SetCommonStates(CommonRenderPassArgs commonArgs, ComPtr<ID3D12PipelineState
 	commandList->RSSetScissorRects(1, &commonArgs.scissorRect);
 
 	// Set descriptor heap.
-	std::array<ID3D12DescriptorHeap*, 1> descriptorHeaps = { commonArgs.cbvSrvUavHeap.Get() };
+	std::array<ID3D12DescriptorHeap*, 1> descriptorHeaps = { 
+		commonArgs.cbvSrvUavHeapGlobal.Get()
+	};
 	commandList->SetDescriptorHeaps((UINT)descriptorHeaps.size(), descriptorHeaps.data());
 
 	const auto vpMatrix = commonArgs.viewProjectionMatrix;
@@ -52,10 +54,15 @@ void DrawInstanceIndexed(UINT context, const std::vector<DrawArgs>& drawArgs, Co
 	}
 }
 
-void SetInstanceCB(CommonRenderPassArgs& args, const RenderInstance& renderInstance, ComPtr<ID3D12GraphicsCommandList> commandList)
+void SetInstanceCB(CommonRenderPassArgs& args, const UINT frameIndex, const RenderInstance& renderInstance, ComPtr<ID3D12GraphicsCommandList> commandList)
 {
-	auto cbvHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
+	auto cbvHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+		args.cbvSrvUavHeapGlobal->GetGPUDescriptorHandleForHeapStart(),
+		FrameDescriptors::GetDescriptorOffsetCBVSRVUAV(CBVRenderInstance, frameIndex),
+		args.cbvSrvUavDescSize
+	);
 	cbvHeapHandle.Offset(renderInstance.CBIndex, args.cbvSrvUavDescSize);
+
 	commandList->SetGraphicsRootDescriptorTable(
 		DefaultRootParameterIdx::CBVTableIdx,
 		cbvHeapHandle
@@ -187,7 +194,7 @@ void NonIndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstanc
 	NonIndexedRenderPassArgs& args = ToSpecificArgs<NonIndexedRenderPassArgs>(pipelineArgs);
 	auto commandList = GetCommandList(context, frameIndex);
 
-	SetInstanceCB(args.commonArgs, renderInstance, commandList);
+	SetInstanceCB(args.commonArgs, frameIndex, renderInstance, commandList);
 
 	for (UINT i = context; i < drawArgs.size(); i += NumContexts)
 	{
@@ -252,7 +259,7 @@ void IndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, 
 	IndexedRenderPassArgs& args = ToSpecificArgs<IndexedRenderPassArgs>(pipelineArgs);
 	auto commandList = GetCommandList(context, frameIndex);
 
-	SetInstanceCB(args.commonArgs, renderInstance, commandList);
+	SetInstanceCB(args.commonArgs, frameIndex, renderInstance, commandList);
 
 	DrawInstanceIndexed(context, drawArgs, commandList);
 }
@@ -372,7 +379,7 @@ void DeferredGBufferRenderPass::PerRenderInstance(const RenderInstance& renderIn
 	DeferredGBufferRenderPassArgs& args = ToSpecificArgs<DeferredGBufferRenderPassArgs>(pipelineArgs);
 	auto commandList = GetCommandList(context, frameIndex);
 
-	SetInstanceCB(args.commonArgs, renderInstance, commandList);
+	SetInstanceCB(args.commonArgs, frameIndex, renderInstance, commandList);
 	DrawInstanceIndexed(context, drawArgs, commandList);
 }
 
@@ -433,8 +440,8 @@ void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& render
 	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	
 	// Set the descriptor table for gbuffer srvs.
-	auto descHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-	descHeapHandle.Offset(FRAME_DESCRIPTOR_OFFSET(SRVGBuffers, frameIndex), args.commonArgs.cbvSrvUavDescSize);
+	auto descHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeapGlobal->GetGPUDescriptorHandleForHeapStart());
+	descHeapHandle.Offset(GlobalDescriptors::GetDescriptorOffset(SRVGBuffers), args.commonArgs.cbvSrvUavDescSize);
 	commandList->SetGraphicsRootDescriptorTable(DefaultRootParameterIdx::UAVSRVTableIdx, descHeapHandle);
 
 	commandList->OMSetRenderTargets(1, &args.RTV, TRUE, nullptr);
@@ -607,11 +614,13 @@ void AccumilationRenderPass::Render(const std::vector<RenderPackage>& renderPack
 	commandList->OMSetRenderTargets(1, &args.RTVTargetFrame, TRUE, nullptr);
 
 	// Set the descriptor table for SRVs and UAVs
-	auto descHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-	descHeapHandle.Offset(FRAME_DESCRIPTOR_OFFSET(SRVGBuffers, frameIndex), args.commonArgs.cbvSrvUavDescSize);
-	commandList->SetGraphicsRootDescriptorTable(DefaultRootParameterIdx::UAVSRVTableIdx, descHeapHandle);
-
+	auto descHeapHandleBase = CD3DX12_GPU_DESCRIPTOR_HANDLE(
+		args.commonArgs.cbvSrvUavHeapGlobal->GetGPUDescriptorHandleForHeapStart(),
+		GlobalDescriptors::GetDescriptorOffset(SRVGBuffers),
+		args.commonArgs.cbvSrvUavDescSize
+	);
 	
+	commandList->SetGraphicsRootDescriptorTable(DefaultRootParameterIdx::UAVSRVTableIdx, descHeapHandleBase);
 
 	commandList->DrawInstanced(6, 1, 0, 0);
 }
