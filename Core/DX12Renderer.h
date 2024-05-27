@@ -49,14 +49,16 @@ public:
 	ComPtr<ID3D12GraphicsCommandList4> CreateCommandList(ComPtr<ID3D12Device5> device, bool autoReset = true, D3D12_COMMAND_LIST_FLAGS flags = D3D12_COMMAND_LIST_FLAG_NONE);
 
 	ID3D12CommandQueue* Get() const;
+	UINT GetCompletedFenceValue();
 
 	void ResetAllocator();
 	// Assumes that the command list used is a command list previously created by this class.
 	void ResetCommandList(ComPtr<ID3D12GraphicsCommandList1> commandList);
 
-	void Signal();
+	UINT Signal();
 	// If nullptr is passed, the function will wait indefinitely.
-	void Wait();
+	void WaitForLatestSignal();
+	void WaitForFence(UINT64 fenceValue);
 	// If nullptr is passed, the function will wait indefinitely.
 	void SignalAndWait();
 
@@ -265,6 +267,8 @@ public:
 
 	std::array<ComPtr<ID3D12CommandAllocator>, CommandListIdentifier::NumCommandLists> commandAllocators;
 	std::array<ComPtr<ID3D12GraphicsCommandList4>, CommandListIdentifier::NumCommandLists> commandLists;
+
+	UINT fenceValue;
 
 private:
 	UINT m_frameIndex;

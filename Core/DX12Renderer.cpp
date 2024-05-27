@@ -137,20 +137,26 @@ void DX12Renderer::Update()
 {
 	m_time += 1 / 60.0f;
 
-	UpdateCamera();
+	UINT currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+	m_currentFrameResource = m_frameResources[currentBackBufferIndex].get();
 
-	GlobalFrameData globalFrameData = {
-		.frameCount = m_frameCount,
-		.accumulatedFrames = m_accumulatedFrames,
-		.time = m_time
-	};
+	// Wait for the frame to finish if its still in flight.
+	m_directCommandQueue->WaitForFence(m_currentFrameResource->fenceValue);
+
+	UpdateCamera();
 
 	FrameResource::FrameResourceUpdateInputs inputs = {
 		.camera = m_activeCamera,
 		.renderInstancesByID = m_renderInstancesByID,
 		.bottomAccStructByID = m_bottomAccStructByID,
-		.globalFrameData = globalFrameData
+
+		.globalFrameData = {
+			.frameCount = m_frameCount,
+			.accumulatedFrames = m_accumulatedFrames,
+			.time = m_time
+		}
 	};
+
 
 	m_currentFrameResource->UpdateFrameResources(inputs);
 }
@@ -369,12 +375,6 @@ void DX12Renderer::Render()
 						// Put resource barrier.
 						CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_currentFrameResource->middleTexture.Get());
 						commandList->ResourceBarrier(1, &uavBarrier);
-
-						// TODONOW: Make sure to do this at update time.
-						//for (const RenderObjectID renderObjectID : passObjectIDs)
-						//{
-						//	UpdateTopLevelAccelerationStructure(renderObjectID, commandList);
-						//}
 					}
 
 					renderPassArgs = RaytracedAORenderPassArgs {
@@ -467,21 +467,14 @@ void DX12Renderer::Render()
 		m_directCommandQueue->commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
 	}
 
-	// Insert fence that signifies command list completion.
-	m_directCommandQueue->Signal();
-	// Wait for the command queue to finish.
-	m_directCommandQueue->Wait();
-
 	// Present
-	m_swapChain->Present(1, 0) >> CHK_HR;
+	m_swapChain->Present(0, 0) >> CHK_HR;
 
-	m_directCommandQueue->SignalAndWait();
+	UINT fenceVal = m_directCommandQueue->Signal();
+	m_currentFrameResource->fenceValue = fenceVal; // Save the fence val for this frame.
 
 	// Increment frame count.
 	m_frameCount++;
-
-	UINT nextFrameIndex = (currentFrameIndex + 1) % BackBufferCount;
-	m_currentFrameResource = m_frameResources[nextFrameIndex].get();
 }
 
 DX12Renderer::~DX12Renderer()
@@ -1017,7 +1010,7 @@ void FrameResource::CreateSRVs(ComPtr<ID3D12Device5> device, ComPtr<ID3D12Descri
 
 
 FrameResource::FrameResource(UINT frameIndex, ComPtr<ID3D12Resource> backBuffer, FrameResourceInputs inputs)
-	: syncHandler(), m_frameIndex(frameIndex)
+	: syncHandler(), fenceValue(0), m_frameIndex(frameIndex)
 {
 	const UINT width = (UINT)inputs.viewPort.Width;
 	const UINT height = (UINT)inputs.viewPort.Height;
@@ -1894,8 +1887,8 @@ void DX12Renderer::UpdateCamera()
 {
 	// Update camera before rendering.
 	dx::XMVECTOR startPos = dx::XMVectorSet(0.0f, 0.0f, -13.0f, 1.0f);
-	//float angle = m_time * dx::XM_2PI / 20.0f;
-	float angle = 0.0f;
+	float angle = m_time * dx::XM_2PI / 20.0f;
+	//float angle = 0.0f;
 	
 	dx::XMMATRIX rotationMatrix = dx::XMMatrixRotationNormal(dx::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), angle);
 	dx::XMVECTOR newPos = dx::XMVector3Transform(startPos, rotationMatrix);
@@ -2249,6 +2242,11 @@ ID3D12CommandQueue* CommandQueueHandler::Get() const
 	return commandQueue.Get();
 }
 
+UINT CommandQueueHandler::GetCompletedFenceValue()
+{
+	return m_fence->GetCompletedValue();
+}
+
 void CommandQueueHandler::ResetAllocator()
 {
 	commandAllocator->Reset() >> CHK_HR;
@@ -2259,19 +2257,27 @@ void CommandQueueHandler::ResetCommandList(ComPtr<ID3D12GraphicsCommandList1> co
 	commandList->Reset(commandAllocator.Get(), nullptr) >> CHK_HR;
 }
 
-void CommandQueueHandler::Signal()
+UINT CommandQueueHandler::Signal()
 {
 	commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
+
+	return m_fenceValue;
 }
 
-void CommandQueueHandler::Wait()
+void CommandQueueHandler::WaitForLatestSignal()
 {
-	// If the latest completed value is already at the fence value or larger,
+	// Wait for the latest signal to complete.
+	WaitForFence(m_fenceValue);
+}
+
+void CommandQueueHandler::WaitForFence(UINT64 fenceValue)
+{
+	// If the value is already at the fence value or larger,
 	// there is no need to set and wait for any event as it would pass immediately.
-	if (m_fence->GetCompletedValue() < m_fenceValue)
+	if (GetCompletedFenceValue() < fenceValue)
 	{
 		m_fence->SetEventOnCompletion(m_fenceValue, m_eventHandle) >> CHK_HR;
-		if(WaitForSingleObject(m_eventHandle, CommandQueueHandler::MaxWaitTimeMS) != WAIT_OBJECT_0)
+		if (WaitForSingleObject(m_eventHandle, CommandQueueHandler::MaxWaitTimeMS) != WAIT_OBJECT_0)
 		{
 			throw std::runtime_error("ERROR: Fence wait timed out.");
 		}
@@ -2281,7 +2287,7 @@ void CommandQueueHandler::Wait()
 void CommandQueueHandler::SignalAndWait()
 {
 	Signal();
-	Wait();
+	WaitForLatestSignal();
 }
 
 void CommandQueueHandler::ExecuteCommandLists(DX12Abstractions::CommandListVector& commandLists, UINT count /*= 0*/, const UINT offset /*= 0*/)
