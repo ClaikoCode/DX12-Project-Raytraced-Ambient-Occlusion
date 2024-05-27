@@ -32,7 +32,7 @@ T& ToSpecificArgs(RenderPassArgs* pipelineSpecificArgs)
 class DX12RenderPass
 {
 public:
-	DX12RenderPass(ComPtr<ID3D12Device5> device);
+	DX12RenderPass(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE commandType);
 	~DX12RenderPass() = default;
 
 	void Init(UINT frameIndex);
@@ -70,7 +70,7 @@ class NonIndexedRenderPass : public DX12RenderPass
 {
 public:
 	NonIndexedRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig)
-		: DX12RenderPass(device) {}
+		: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_DIRECT) {}
 
 	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs) override final;
 
@@ -83,7 +83,7 @@ class IndexedRenderPass : public DX12RenderPass
 {
 public:
 	IndexedRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig)
-		: DX12RenderPass(device) {}
+		: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_DIRECT) {}
 
 	void Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs) override final;
 

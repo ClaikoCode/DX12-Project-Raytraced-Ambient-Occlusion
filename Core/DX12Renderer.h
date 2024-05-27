@@ -36,6 +36,9 @@ public:
 	// Static variable describing max wait time for command queue.
 	static const UINT MaxWaitTimeMS = 20000u;
 
+	ComPtr<ID3D12CommandQueue> commandQueue;
+	ComPtr<ID3D12CommandAllocator> commandAllocator;
+
 public:
 	CommandQueueHandler();
 	~CommandQueueHandler();
@@ -43,13 +46,11 @@ public:
 	CommandQueueHandler(const CommandQueueHandler& other) = delete;
 	CommandQueueHandler& operator= (const CommandQueueHandler& other) = delete;
 
-	ComPtr<ID3D12CommandQueue> commandQueue;
-	ComPtr<ID3D12CommandAllocator> commandAllocator;
-
 	// Automatically resets the command list by default. If the usage pattern involves manual resetting in a loop for example, set argument to false.
 	ComPtr<ID3D12GraphicsCommandList4> CreateCommandList(ComPtr<ID3D12Device5> device, bool autoReset = true, D3D12_COMMAND_LIST_FLAGS flags = D3D12_COMMAND_LIST_FLAG_NONE);
 
 	ID3D12CommandQueue* Get() const;
+	ComPtr<ID3D12Fence> GetFence() const;
 	UINT64 GetCompletedFenceValue();
 
 	void ResetAllocator();
@@ -62,6 +63,9 @@ public:
 	void WaitForFence(UINT64 fenceValue);
 	// If nullptr is passed, the function will wait indefinitely.
 	void SignalAndWait();
+
+	void GPUWait(ComPtr<ID3D12Fence> fence, UINT64 fenceValue);
+	void GPUWaitForOtherQueue(CommandQueueHandler& otherQueue);
 
 	void ExecuteCommandLists(DX12Abstractions::CommandListVector& commandLists, UINT count = 0, const UINT offset = 0);
 

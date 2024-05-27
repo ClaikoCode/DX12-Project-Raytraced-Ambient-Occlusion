@@ -69,7 +69,7 @@ void SetInstanceCB(CommonRenderPassArgs& args, const UINT frameIndex, const Rend
 	);
 }
 
-DX12RenderPass::DX12RenderPass(ComPtr<ID3D12Device5> device)
+DX12RenderPass::DX12RenderPass(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE commandType) 
 	: m_pipelineState(nullptr), m_renderableObjects({}), m_enabled(true)
 {
 	for (UINT bb = 0; bb < commandLists.size(); bb++)
@@ -77,13 +77,13 @@ DX12RenderPass::DX12RenderPass(ComPtr<ID3D12Device5> device)
 		for (UINT i = 0; i < NumContexts; i++)
 		{
 			device->CreateCommandAllocator(
-				D3D12_COMMAND_LIST_TYPE_DIRECT,
+				commandType,
 				IID_PPV_ARGS(&commandAllocators[bb][i])
 			) >> CHK_HR;
 
 			device->CreateCommandList(
 				0,
-				D3D12_COMMAND_LIST_TYPE_DIRECT,
+				commandType,
 				commandAllocators[bb][i].Get(),
 				m_pipelineState.Get(),
 				IID_PPV_ARGS(&commandLists[bb][i])
@@ -265,7 +265,7 @@ void IndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, 
 }
 
 DeferredGBufferRenderPass::DeferredGBufferRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
-	: DX12RenderPass(device)
+	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_DIRECT)
 {
 	// White list render objects.
 	{
@@ -385,7 +385,7 @@ void DeferredGBufferRenderPass::PerRenderInstance(const RenderInstance& renderIn
 
 
 DeferredLightingRenderPass::DeferredLightingRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
-	: DX12RenderPass(device)
+	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_DIRECT)
 {
 	struct DeferredLightingStateStream
 	{
@@ -460,7 +460,7 @@ void DeferredLightingRenderPass::PerRenderInstance(const RenderInstance& renderI
 }
 
 RaytracedAORenderPass::RaytracedAORenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
-	: DX12RenderPass(device)
+	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_COMPUTE)
 {
 	// Only allow OBJ models for now.
 	m_renderableObjects.push_back(RenderObjectID::Cube);
@@ -560,7 +560,7 @@ void RaytracedAORenderPass::PerRenderInstance(const RenderInstance& renderInstan
 }
 
 AccumilationRenderPass::AccumilationRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
-	: DX12RenderPass(device)
+	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_DIRECT)
 {
 	struct AccumilationPipelineStateStream
 	{
