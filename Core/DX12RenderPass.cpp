@@ -65,38 +65,41 @@ void SetInstanceCB(CommonRenderPassArgs& args, const RenderInstance& renderInsta
 DX12RenderPass::DX12RenderPass(ComPtr<ID3D12Device5> device)
 	: m_pipelineState(nullptr), m_renderableObjects({}), m_enabled(true)
 {
-	for (UINT i = 0; i < NumContexts; i++)
+	for (UINT bb = 0; bb < commandLists.size(); bb++)
 	{
-		device->CreateCommandAllocator(
-			D3D12_COMMAND_LIST_TYPE_DIRECT,
-			IID_PPV_ARGS(&commandAllocators[i])
-		) >> CHK_HR;
+		for (UINT i = 0; i < NumContexts; i++)
+		{
+			device->CreateCommandAllocator(
+				D3D12_COMMAND_LIST_TYPE_DIRECT,
+				IID_PPV_ARGS(&commandAllocators[bb][i])
+			) >> CHK_HR;
 
-		device->CreateCommandList(
-			0, 
-			D3D12_COMMAND_LIST_TYPE_DIRECT, 
-			commandAllocators[i].Get(), 
-			m_pipelineState.Get(), 
-			IID_PPV_ARGS(&commandLists[i])
-		) >> CHK_HR;
+			device->CreateCommandList(
+				0,
+				D3D12_COMMAND_LIST_TYPE_DIRECT,
+				commandAllocators[bb][i].Get(),
+				m_pipelineState.Get(),
+				IID_PPV_ARGS(&commandLists[bb][i])
+			) >> CHK_HR;
 
-		commandLists[i]->Close() >> CHK_HR;
+			commandLists[bb][i]->Close() >> CHK_HR;
+		}
 	}
 }
 
-void DX12RenderPass::Init()
+void DX12RenderPass::Init(UINT frameIndex)
 {
 	// Reset the command lists and allocators.
 	for (UINT i = 0; i < NumContexts; i++)
 	{
-		commandAllocators[i]->Reset() >> CHK_HR;
-		commandLists[i]->Reset(commandAllocators[i].Get(), m_pipelineState.Get()) >> CHK_HR;
+		commandAllocators[frameIndex][i]->Reset() >> CHK_HR;
+		commandLists[frameIndex][i]->Reset(commandAllocators[frameIndex][i].Get(), m_pipelineState.Get()) >> CHK_HR;
 	}
 }
 
-void DX12RenderPass::Close(UINT context)
+void DX12RenderPass::Close(UINT frameIndex, UINT context)
 {
-	commandLists[context]->Close() >> CHK_HR;
+	commandLists[frameIndex][context]->Close() >> CHK_HR;
 }
 
 const std::vector<RenderObjectID>& DX12RenderPass::GetRenderableObjects() const
@@ -119,24 +122,29 @@ bool DX12RenderPass::IsEnabled()
 	return m_enabled;
 }
 
-ComPtr<ID3D12GraphicsCommandList4> DX12RenderPass::GetFirstCommandList()
+ComPtr<ID3D12GraphicsCommandList4> DX12RenderPass::GetCommandList(UINT context, UINT frameIndex)
 {
-	return commandLists[0];
+	return commandLists[frameIndex][context];
 }
 
-ComPtr<ID3D12GraphicsCommandList4> DX12RenderPass::GetLastCommandList()
+ComPtr<ID3D12GraphicsCommandList4> DX12RenderPass::GetFirstCommandList(UINT frameIndex)
 {
-	return commandLists[commandLists.size() - 1];
+	return commandLists[frameIndex][0];
 }
 
-void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineArgs)
+ComPtr<ID3D12GraphicsCommandList4> DX12RenderPass::GetLastCommandList(UINT frameIndex)
+{
+	return commandLists[frameIndex][commandLists.size() - 1];
+}
+
+void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
 	// TODO: Handle this error better.
 	assert(pipelineArgs != nullptr);
 
 	NonIndexedRenderPassArgs& args = ToSpecificArgs<NonIndexedRenderPassArgs>(pipelineArgs);
 	
-	auto commandList = commandLists[context];
+	auto commandList = GetCommandList(context, frameIndex);
 	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
 
 	// Set render target and depth stencil.
@@ -149,7 +157,7 @@ void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackag
 		{
 			const RenderObject& renderObject = *renderPackage.renderObject;
 
-			PerRenderObject(renderObject, pipelineArgs, context);
+			PerRenderObject(renderObject, pipelineArgs, context, frameIndex);
 
 			const std::vector<DrawArgs>& drawArgs = renderObject.drawArgs;
 
@@ -159,25 +167,25 @@ void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackag
 			
 				for (const RenderInstance& renderInstance : renderInstances)
 				{
-					PerRenderInstance(renderInstance, drawArgs, pipelineArgs, context);
+					PerRenderInstance(renderInstance, drawArgs, pipelineArgs, context, frameIndex);
 				}
 			}
 		}
 	}
 }
 
-void NonIndexedRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
+void NonIndexedRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context, UINT frameIndex)
 {
-	auto commandList = commandLists[context];
+	auto commandList = GetCommandList(context, frameIndex);
 
 	commandList->IASetPrimitiveTopology(renderObject.topology);
 	commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
 }
 
-void NonIndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
+void NonIndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context, UINT frameIndex)
 {
 	NonIndexedRenderPassArgs& args = ToSpecificArgs<NonIndexedRenderPassArgs>(pipelineArgs);
-	auto commandList = commandLists[context];
+	auto commandList = GetCommandList(context, frameIndex);
 
 	SetInstanceCB(args.commonArgs, renderInstance, commandList);
 
@@ -194,13 +202,13 @@ void NonIndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstanc
 	}
 }
 
-void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
+void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
 	// TODO: Handle this error better.
-	assert(pipelineSpecificArgs != nullptr);
-	IndexedRenderPassArgs& args = *reinterpret_cast<IndexedRenderPassArgs*>(pipelineSpecificArgs);
+	assert(pipelineArgs != nullptr);
+	IndexedRenderPassArgs& args = *reinterpret_cast<IndexedRenderPassArgs*>(pipelineArgs);
 
-	auto commandList = commandLists[context];
+	auto commandList = GetCommandList(context, frameIndex);
 	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
 
 	// Set render target and depth stencil.
@@ -213,7 +221,7 @@ void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages,
 		{
 			const RenderObject& renderObject = *renderPackage.renderObject;
 
-			PerRenderObject(renderObject, pipelineSpecificArgs, context);
+			PerRenderObject(renderObject, pipelineArgs, context, frameIndex);
 
 			const std::vector<DrawArgs>& drawArgs = renderObject.drawArgs;
 
@@ -223,26 +231,26 @@ void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages,
 
 				for (const RenderInstance& renderInstance : renderInstances)
 				{
-					PerRenderInstance(renderInstance, drawArgs, pipelineSpecificArgs, context);
+					PerRenderInstance(renderInstance, drawArgs, pipelineArgs, context, frameIndex);
 				}
 			}
 		}
 	}
 }
 
-void IndexedRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
+void IndexedRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context, UINT frameIndex)
 {
-	auto commandList = commandLists[context];
+	auto commandList = GetCommandList(context, frameIndex);
 
 	commandList->IASetPrimitiveTopology(renderObject.topology);
 	commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
 	commandList->IASetIndexBuffer(&renderObject.indexBufferView);
 }
 
-void IndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
+void IndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context, UINT frameIndex)
 {
 	IndexedRenderPassArgs& args = ToSpecificArgs<IndexedRenderPassArgs>(pipelineArgs);
-	auto commandList = commandLists[context];
+	auto commandList = GetCommandList(context, frameIndex);
 
 	SetInstanceCB(args.commonArgs, renderInstance, commandList);
 
@@ -294,7 +302,7 @@ DeferredGBufferRenderPass::DeferredGBufferRenderPass(ComPtr<ID3D12Device5> devic
 	memset(&formatArr, 0, sizeof(formatArr)); // Initialize memory with 0.
 
 	// Set the format of each gbuffer.
-	for (UINT i = 0; i < GBufferCount; i++)
+	for (UINT i = 0; i < GBufferIDCount; i++)
 	{
 		formatArr.RTFormats[i] = GBufferFormats[i];
 		formatArr.NumRenderTargets++;
@@ -313,18 +321,18 @@ DeferredGBufferRenderPass::DeferredGBufferRenderPass(ComPtr<ID3D12Device5> devic
 	NAME_D3D12_OBJECT_MEMBER(m_pipelineState, DeferredGBufferRenderPass);
 }
 
-void DeferredGBufferRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
+void DeferredGBufferRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
 	// TODO: Handle this error better.
-	assert(pipelineSpecificArgs != nullptr);
-	DeferredGBufferRenderPassArgs& args = ToSpecificArgs<DeferredGBufferRenderPassArgs>(pipelineSpecificArgs);
+	assert(pipelineArgs != nullptr);
+	DeferredGBufferRenderPassArgs& args = ToSpecificArgs<DeferredGBufferRenderPassArgs>(pipelineArgs);
 
-	auto commandList = commandLists[context];
+	auto commandList = GetCommandList(context, frameIndex);
 	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
 
 	// Set render targets and depth stencil. The RTVs are assumed to be contiguous in memory, 
 	// which is why the handle to the first GBuffer RTV is required.
-	commandList->OMSetRenderTargets(GBufferCount, &args.firstGBufferRTVHandle, TRUE, &args.commonArgs.depthStencilView);
+	commandList->OMSetRenderTargets(GBufferIDCount, &args.firstGBufferRTVHandle, TRUE, &args.commonArgs.depthStencilView);
 
 	// Draw.
 	for (const RenderPackage& renderPackage : renderPackages)
@@ -333,7 +341,7 @@ void DeferredGBufferRenderPass::Render(const std::vector<RenderPackage>& renderP
 		{
 			const RenderObject& renderObject = *renderPackage.renderObject;
 
-			PerRenderObject(renderObject, pipelineSpecificArgs, context);
+			PerRenderObject(renderObject, pipelineArgs, context, frameIndex);
 
 			const std::vector<DrawArgs>& drawArgs = renderObject.drawArgs;
 
@@ -343,29 +351,28 @@ void DeferredGBufferRenderPass::Render(const std::vector<RenderPackage>& renderP
 
 				for (const RenderInstance& renderInstance : renderInstances)
 				{
-					PerRenderInstance(renderInstance, drawArgs, pipelineSpecificArgs, context);
+					PerRenderInstance(renderInstance, drawArgs, pipelineArgs, context, frameIndex);
 				}
 			}
 		}
 	}
 }
 
-void DeferredGBufferRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
+void DeferredGBufferRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context, UINT frameIndex)
 {
-	auto commandList = commandLists[context];
+	auto commandList = GetCommandList(context, frameIndex);
 
 	commandList->IASetPrimitiveTopology(renderObject.topology);
 	commandList->IASetVertexBuffers(0, 1, &renderObject.vertexBufferView);
 	commandList->IASetIndexBuffer(&renderObject.indexBufferView);
 }
 
-void DeferredGBufferRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
+void DeferredGBufferRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context, UINT frameIndex)
 {
 	DeferredGBufferRenderPassArgs& args = ToSpecificArgs<DeferredGBufferRenderPassArgs>(pipelineArgs);
-	auto commandList = commandLists[context];
+	auto commandList = GetCommandList(context, frameIndex);
 
 	SetInstanceCB(args.commonArgs, renderInstance, commandList);
-
 	DrawInstanceIndexed(context, drawArgs, commandList);
 }
 
@@ -413,12 +420,12 @@ DeferredLightingRenderPass::DeferredLightingRenderPass(ComPtr<ID3D12Device5> dev
 	NAME_D3D12_OBJECT_MEMBER(m_pipelineState, DeferredLightingStateStream);
 }
 
-void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
+void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
-	assert(pipelineSpecificArgs != nullptr);
-	DeferredLightingRenderPassArgs& args = ToSpecificArgs<DeferredLightingRenderPassArgs>(pipelineSpecificArgs);
+	assert(pipelineArgs != nullptr);
+	DeferredLightingRenderPassArgs& args = ToSpecificArgs<DeferredLightingRenderPassArgs>(pipelineArgs);
 
-	auto commandList = commandLists[context];
+	auto commandList = GetCommandList(context, frameIndex);
 
 	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
 
@@ -427,7 +434,7 @@ void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& render
 	
 	// Set the descriptor table for gbuffer srvs.
 	auto descHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-	descHeapHandle.Offset(CBVSRVUAVOffsets::SRVOffsetGBuffers, args.commonArgs.cbvSrvUavDescSize);
+	descHeapHandle.Offset(FRAME_DESCRIPTOR_OFFSET(SRVGBuffers, frameIndex), args.commonArgs.cbvSrvUavDescSize);
 	commandList->SetGraphicsRootDescriptorTable(DefaultRootParameterIdx::UAVSRVTableIdx, descHeapHandle);
 
 	commandList->OMSetRenderTargets(1, &args.RTV, TRUE, nullptr);
@@ -435,12 +442,12 @@ void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& render
 	commandList->DrawInstanced(6, 1, 0, 0);
 }
 
-void DeferredLightingRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
+void DeferredLightingRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context, UINT frameIndex)
 {
 	// No OP.
 }
 
-void DeferredLightingRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
+void DeferredLightingRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context, UINT frameIndex)
 {
 	// No OP.
 }
@@ -452,17 +459,17 @@ RaytracedAORenderPass::RaytracedAORenderPass(ComPtr<ID3D12Device5> device, ComPt
 	m_renderableObjects.push_back(RenderObjectID::Cube);
 }
 
-void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
+void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
 	// TODO: This is a temporary fix to not forget that this will not work for more contexts.
 	assert(context == 0);
 	if (context != 0)
 		return;
 
-	assert(pipelineSpecificArgs != nullptr);
-	const RaytracedAORenderPassArgs& args = ToSpecificArgs<RaytracedAORenderPassArgs>(pipelineSpecificArgs);
+	assert(pipelineArgs != nullptr);
+	const RaytracedAORenderPassArgs& args = ToSpecificArgs<RaytracedAORenderPassArgs>(pipelineArgs);
 
-	auto commandList = commandLists[context];
+	auto commandList = GetCommandList(context, frameIndex);
 
 	// Set descriptor heap.
 	std::array<ID3D12DescriptorHeap*, 1> descriptorHeaps = { args.commonRTArgs.cbvSrvUavHeap.Get() };
@@ -506,12 +513,12 @@ void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPacka
 	commandList->DispatchRays(&raytraceDesc);
 }
 
-void RaytracedAORenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
+void RaytracedAORenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context, UINT frameIndex)
 {
 	// NO OP
 }
 
-void RaytracedAORenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
+void RaytracedAORenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context, UINT frameIndex)
 {
 	// NO OP
 }
@@ -559,12 +566,12 @@ AccumilationRenderPass::AccumilationRenderPass(ComPtr<ID3D12Device5> device, Com
 	NAME_D3D12_OBJECT_MEMBER(m_pipelineState, AccumilationRenderPass);
 }
 
-void AccumilationRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, RenderPassArgs* pipelineSpecificArgs)
+void AccumilationRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
-	assert(pipelineSpecificArgs != nullptr);
-	const AccumulationRenderPassArgs& args = ToSpecificArgs<AccumulationRenderPassArgs>(pipelineSpecificArgs);
+	assert(pipelineArgs != nullptr);
+	const AccumulationRenderPassArgs& args = ToSpecificArgs<AccumulationRenderPassArgs>(pipelineArgs);
 
-	auto commandList = commandLists[context];
+	auto commandList = GetCommandList(context, frameIndex);
 
 	SetCommonStates(args.commonArgs, m_pipelineState, commandList);
 	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -572,7 +579,7 @@ void AccumilationRenderPass::Render(const std::vector<RenderPackage>& renderPack
 
 	// Set the descriptor table for SRVs and UAVs
 	auto descHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(args.commonArgs.cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-	descHeapHandle.Offset(CBVSRVUAVOffsets::SRVOffsetGBuffers, args.commonArgs.cbvSrvUavDescSize);
+	descHeapHandle.Offset(FRAME_DESCRIPTOR_OFFSET(SRVGBuffers, frameIndex), args.commonArgs.cbvSrvUavDescSize);
 	commandList->SetGraphicsRootDescriptorTable(DefaultRootParameterIdx::UAVSRVTableIdx, descHeapHandle);
 
 	
@@ -580,12 +587,12 @@ void AccumilationRenderPass::Render(const std::vector<RenderPackage>& renderPack
 	commandList->DrawInstanced(6, 1, 0, 0);
 }
 
-void AccumilationRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context)
+void AccumilationRenderPass::PerRenderObject(const RenderObject& renderObject, RenderPassArgs* pipelineArgs, UINT context, UINT frameIndex)
 {
 	// NO OP
 }
 
-void AccumilationRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context)
+void AccumilationRenderPass::PerRenderInstance(const RenderInstance& renderInstance, const std::vector<DrawArgs>& drawArgs, RenderPassArgs* pipelineArgs, UINT context, UINT frameIndex)
 {
 	// NO OP
 }

@@ -16,12 +16,20 @@ constexpr const char* AssetsPath = "../../../../assets/";
 constexpr uint32_t NumContexts = 1u;
 
 // How many back back buffers the program uses.
-constexpr UINT BufferCount = 2;
+constexpr UINT BackBufferCount = 2;
 constexpr FLOAT OptimizedClearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 // Reference to the back buffer format.
 //constexpr DXGI_FORMAT BackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 constexpr DXGI_FORMAT BackBufferFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
+enum CommandListIdentifier
+{
+	PreCommandList = 0,
+	PostCommandList,
+
+	NumCommandLists // Keep this last!
+};
 
 // A unique identifier for each type of render pass.
 enum RenderPassType : uint32_t
@@ -43,58 +51,65 @@ enum GBufferID : UINT
 	GBufferNormal,
 	GBufferWorldPos,
 
-	GBufferCount // Keep last!
+	GBufferIDCount // Keep last!
 };
 
 // Array of formats for each gbuffer texture.
-constexpr std::array<DXGI_FORMAT, GBufferCount> GBufferFormats = { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT };
+constexpr std::array<DXGI_FORMAT, GBufferIDCount> GBufferFormats = { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT };
 
 // The maximum number of instances that can be rendered in a single draw call.
 constexpr uint32_t MaxRenderInstances = 100u;
-constexpr uint32_t MiddleTextureDescriptorCount = 2;
+constexpr uint32_t MaxRTInstancesPerTopLevel = 50u;
 
-constexpr uint32_t MaxRTVDescriptors = 20u;
+constexpr uint32_t MaxRTVDescriptors = (20u) * BackBufferCount;
 // This should be below the sum of all the descriptors for this type of descriptor.
-constexpr uint32_t MaxCBVSRVUAVDescriptors = MaxRenderInstances * 2;
+constexpr uint32_t MaxCBVSRVUAVDescriptors = (MaxRenderInstances * 2) * BackBufferCount;
+
+// Macros to define indexing inside of offsets in descriptor heaps.
+#define DESCRIPTOR_COUNT(BaseName) BaseName##Count
+#define DESCRIPTOR_OFFSET(BaseName) BaseName##Offset
+#define FRAME_DESCRIPTOR_OFFSET(BaseName, FrameIndex) (DESCRIPTOR_OFFSET(BaseName) * BackBufferCount + DESCRIPTOR_COUNT(BaseName) * FrameIndex)
+
 
 // The count of different types of descriptors.
 enum CBVSRVUAVCounts : UINT
 {
-	CBVCountRenderInstance				= MaxRenderInstances,
-	CBVCountGlobalFrameData				= 1,
-	SRVCountGbuffers					= GBufferCount,
-	SRVCountMiddleTexture				= 1,
-	SRVCountAccumulationTexture			= 1,
-	SRVCountTLAS						= 1,
-	UAVCountMiddleTexture				= 1,
-	UAVCountAccumulationTexture			= 1
+	CBVRenderInstanceCount				= MaxRenderInstances,
+	CBVGlobalFrameDataCount				= 1,
+	SRVGBuffersCount					= GBufferIDCount,
+	SRVMiddleTextureCount				= 1,
+	SRVAccumulationTextureCount			= 1,
+	SRVTLASCount						= 1,
+	UAVMiddleTextureCount				= 1,
+	UAVAccumulationTextureCount			= 1
 };
 
 // Offsets for descriptors in the descriptor heap. The pattern is always adding the value before and adding its equivalent count.
 // So its always: [DescriptorType]Offset[SpecificName] + [DescriptorType]Count[SpecificName].
+
 enum CBVSRVUAVOffsets : UINT {
-	CBVOffsetRenderInstance			= 0,
-	CBVOffsetGlobalFrameData		= CBVOffsetRenderInstance		+ CBVCountRenderInstance,
-	SRVOffsetGBuffers				= CBVOffsetGlobalFrameData		+ CBVCountGlobalFrameData,
-	SRVOffsetMiddleTexture			= SRVOffsetGBuffers				+ SRVCountGbuffers,
-	SRVOffsetAccumulationTexture	= SRVOffsetMiddleTexture		+ SRVCountMiddleTexture,
-	SRVOffsetTLAS					= SRVOffsetAccumulationTexture	+ SRVCountAccumulationTexture,
-	UAVOffsetMiddleTexture			= SRVOffsetTLAS					+ SRVCountTLAS,
-	UAVOffsetAccumulationTexture	= UAVOffsetMiddleTexture		+ UAVCountMiddleTexture
+	CBVRenderInstanceOffset			= 0,
+	CBVGlobalFrameDataOffset		= CBVRenderInstanceOffset		+ CBVRenderInstanceCount,
+	SRVGBuffersOffset				= CBVGlobalFrameDataOffset		+ CBVGlobalFrameDataCount,
+	SRVMiddleTextureOffset			= SRVGBuffersOffset				+ SRVGBuffersCount,
+	SRVAccumulationTextureOffset	= SRVMiddleTextureOffset		+ SRVMiddleTextureCount,
+	SRVTLASOffset					= SRVAccumulationTextureOffset	+ SRVAccumulationTextureCount,
+	UAVMiddleTextureOffset			= SRVTLASOffset					+ SRVTLASCount,
+	UAVAccumulationTextureOffset	= UAVMiddleTextureOffset		+ UAVMiddleTextureCount
 };
 
 enum RTVCounts : UINT
 {
-	RTVCountBackbuffers		= BufferCount,
-	RTVCountGbuffers		= GBufferCount,
-	RTVCountMiddleTexture	= 1
+	RTVGBuffersCount		= GBufferIDCount,
+	RTVMiddleTextureCount	= 1,
+	RTVBackBuffersCount		= BackBufferCount
 };
 
 enum RTVOffsets : UINT
 {
-	RTVOffsetBackBuffers	= 0, // Back buffers should always come first for simplicity.
-	RTVOffsetGBuffers		= RTVOffsetBackBuffers + RTVCountBackbuffers,
-	RTVOffsetMiddleTexture	= RTVOffsetGBuffers + RTVCountGbuffers
+	RTVGBuffersOffset		= 0,
+	RTVMiddleTextureOffset	= RTVGBuffersOffset + RTVGBuffersCount,
+	RTVBackBuffersOffset	= RTVMiddleTextureOffset + RTVMiddleTextureCount // Back buffers should always come last for simplicity.
 };
 
 struct InstanceConstants
