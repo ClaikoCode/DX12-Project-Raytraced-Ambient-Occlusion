@@ -11,6 +11,15 @@
 using namespace DX12Abstractions;
 namespace dx = DirectX;
 
+static std::vector<RenderPassType> sPassesToRegister = {
+	RenderPassType::DeferredGBufferPass,
+	RenderPassType::DeferredLightingPass,
+	RenderPassType::RaytracedAOPass,
+	RenderPassType::AccumulationPass
+};
+
+static 	std::vector<RenderObjectID> sRTRenderObjectIDs = { RenderObjectID::Cube };
+
 bool HasRenderPass(std::vector<RenderPassType>& renderPassOrder, const RenderPassType pass)
 {
 	return std::find(renderPassOrder.begin(), renderPassOrder.end(), pass) != renderPassOrder.end();
@@ -52,6 +61,47 @@ void GetObjVertexIndices(std::vector<T>& vertexIndices, tinyobj::ObjReader& read
 	}
 }
 
+D3D12_UNORDERED_ACCESS_VIEW_DESC CreateBackbufferUAVDesc()
+{
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc;
+	uavDesc.Format = BackBufferFormat;
+	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+	uavDesc.Texture2D = {
+		.MipSlice = 0,
+		.PlaneSlice = 0
+	};
+
+	return uavDesc;
+}
+
+D3D12_SHADER_RESOURCE_VIEW_DESC CreateBackbufferSRVDesc()
+{
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
+	srvDesc.Format = BackBufferFormat;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.Texture2D = {
+		.MostDetailedMip = 0,
+		.MipLevels = (UINT)(-1),
+		.PlaneSlice = 0,
+		.ResourceMinLODClamp = 0.0f
+	};
+
+	return srvDesc;
+}
+
+CD3DX12_RESOURCE_DESC CreateBackbufferResourceDesc(const UINT width, const UINT height)
+{
+	CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+		BackBufferFormat,
+		width,
+		height
+	);
+	resourceDesc.MipLevels = 1; // Match back buffer.
+
+	return resourceDesc;
+}
+
 DX12Renderer* DX12Renderer::s_instance = nullptr;
 
 ComPtr<ID3D12InfoQueue1> DX12Renderer::GetInfoQueue()
@@ -87,117 +137,91 @@ void DX12Renderer::Update()
 {
 	m_time += 1 / 60.0f;
 
+	UINT currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+	m_currentFrameResource = m_frameResources[currentBackBufferIndex].get();
+
+	// Wait for the frame to finish if its still in flight.
+	m_directCommandQueue->WaitForFence(m_currentFrameResource->fenceValue);
+
 	UpdateCamera();
-	UpdateGlobalFrameDataBuffer();
-	UpdateInstanceConstantBuffers();
+
+	FrameResource::FrameResourceUpdateInputs inputs = {
+		.camera = m_activeCamera,
+		.renderInstancesByID = m_renderInstancesByID,
+		.bottomAccStructByID = m_bottomAccStructByID,
+
+		.globalFrameData = {
+			.frameCount = m_frameCount,
+			.accumulatedFrames = m_accumulatedFrames,
+			.time = m_time
+		}
+	};
+
+
+	m_currentFrameResource->UpdateFrameResources(inputs);
 }
 
 void DX12Renderer::Render()
 {
-	
-
-	UINT currBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
+	UINT currentFrameIndex = m_currentFrameResource->GetFrameIndex();
 
 	// Store command lists for each render pass.
-	// TODO: Make as CommandListVector for consistency.
-	std::vector<ComPtr<ID3D12CommandList>> commandLists;
+	CommandListVector commandLists;
 
-	// Before render pass setup.
-	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPre = nullptr;
-	static ComPtr<ID3D12CommandAllocator> mainThreadCommandAllocatorPre = nullptr;
-	if (mainThreadCommandListPre == nullptr)
-	{
-		m_device->CreateCommandList1(
-			0,
-			D3D12_COMMAND_LIST_TYPE_DIRECT,
-			D3D12_COMMAND_LIST_FLAG_NONE,
-			IID_PPV_ARGS(&mainThreadCommandListPre)
-		) >> CHK_HR;
-
-		m_device->CreateCommandAllocator(
-			D3D12_COMMAND_LIST_TYPE_DIRECT,
-			IID_PPV_ARGS(&mainThreadCommandAllocatorPre)
-		) >> CHK_HR;
-	}
-	
-
-	// After render pass setup.
-	static ComPtr<ID3D12GraphicsCommandList1> mainThreadCommandListPost = nullptr;
-	static ComPtr<ID3D12CommandAllocator> mainThreadCommandAllocatorPost = nullptr;
-	if (mainThreadCommandListPost == nullptr)
-	{
-		m_device->CreateCommandList1(
-			0,
-			D3D12_COMMAND_LIST_TYPE_DIRECT,
-			D3D12_COMMAND_LIST_FLAG_NONE,
-			IID_PPV_ARGS(&mainThreadCommandListPost)
-		) >> CHK_HR;
-
-		m_device->CreateCommandAllocator(
-			D3D12_COMMAND_LIST_TYPE_DIRECT,
-			IID_PPV_ARGS(&mainThreadCommandAllocatorPost)
-		) >> CHK_HR;
-	}
+	m_currentFrameResource->Init();
+	ComPtr<ID3D12GraphicsCommandList4> preCommandList = m_currentFrameResource->commandLists[PreCommandList];
+	ComPtr<ID3D12GraphicsCommandList4> postCommandList = m_currentFrameResource->commandLists[PostCommandList];
 
 	// Fetch the current back buffer that we want to render to.
-	GPUResource& currentBackBuffer = m_backBuffers[currBackBufferIndex];
+	GPUResource& currentBackBuffer = m_backBuffers[currentFrameIndex];
 
 	// Get RTV handle for the current back buffer.
 	const CD3DX12_CPU_DESCRIPTOR_HANDLE bbRTV (
-		m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
-		currBackBufferIndex,
+		m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
+		GlobalDescriptors::GetDescriptorOffset(RTVBackBuffers) + currentFrameIndex,
 		m_rtvDescriptorSize
 	);
 
 	const CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureRTV(
-		m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
-		RTVOffsets::RTVOffsetMiddleTexture,
+		m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
+		GlobalDescriptors::GetDescriptorOffset(RTVMiddleTexture),
 		m_rtvDescriptorSize
 	);
 
 	// Get DSV handle.
-	const CD3DX12_CPU_DESCRIPTOR_HANDLE dsv(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
+	CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(m_dsvHeapGlobal->GetCPUDescriptorHandleForHeapStart());
+	dsvHandle.Offset(GlobalDescriptors::GetDescriptorOffset(DSVScene), m_dsvDescriptorSize);
 
-	// Reset command allocators
-	mainThreadCommandAllocatorPre->Reset();
-	mainThreadCommandAllocatorPost->Reset();
-
-	// Reset pre command list.
-	mainThreadCommandListPre->Reset(mainThreadCommandAllocatorPre.Get(), nullptr);
-	// Reset post command list.
-	mainThreadCommandListPost->Reset(mainThreadCommandAllocatorPost.Get(), nullptr);
-
-	//std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
-	std::vector<RenderPassType> renderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
+	static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass };
+	//static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
 
 	// Pre render pass setup.
 	{
 		// Clear back buffer and prime for rendering.
 		{
-			currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
+			currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, preCommandList);
 
 			float clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
-			mainThreadCommandListPre->ClearRenderTargetView(bbRTV, clearColor, 0, nullptr);
+			preCommandList->ClearRenderTargetView(bbRTV, clearColor, 0, nullptr);
 		}
 
 		// Clear middle texture.
 		{
-			m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, mainThreadCommandListPre);
-
-			mainThreadCommandListPre->ClearRenderTargetView(middleTextureRTV, OptimizedClearColor, 0, nullptr);
+			m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, preCommandList);
+			preCommandList->ClearRenderTargetView(middleTextureRTV, OptimizedClearColor, 0, nullptr);
 		}
 
 		// Setup gbuffers.
-		if (HasRenderPass(renderPassOrder, RenderPassType::DeferredGBufferPass))
+		if (HasRenderPass(sRenderPassOrder, RenderPassType::DeferredGBufferPass))
 		{
-			TransitionGBuffers(mainThreadCommandListPre, D3D12_RESOURCE_STATE_RENDER_TARGET);
-			ClearGBuffers(mainThreadCommandListPre);
+			TransitionGBuffers(preCommandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+			ClearGBuffers(preCommandList);
 		}
 		
 
 		// Clear depth buffer.
-		mainThreadCommandListPre->ClearDepthStencilView(
-			dsv,
+		preCommandList->ClearDepthStencilView(
+			dsvHandle,
 			D3D12_CLEAR_FLAG_DEPTH,
 			1.0f,
 			0,
@@ -205,59 +229,59 @@ void DX12Renderer::Render()
 			nullptr
 		);
 
-		// Close pre command list.
-		mainThreadCommandListPre->Close();
+		// Close pre-command list.
+		preCommandList->Close();
 
 		// Add command list to list of command lists.
-		commandLists.push_back(mainThreadCommandListPre);
+		commandLists.push_back(preCommandList);
 	}
 
 	// Initialize all render passes (resetting).
-	for (auto& renderPass : renderPassOrder)
+	for (auto& renderPass : sRenderPassOrder)
 	{
-		m_renderPasses[renderPass]->Init();
+		m_renderPasses[renderPass]->Init(currentFrameIndex);
 	}
 
 	// Set start sync.
 	for (UINT context = 0; context < NumContexts; context++)
 	{
-		m_syncHandler.SetStart(context);
+		m_currentFrameResource->syncHandler.SetStart(context);
 	}
 
 	// Common args for all passes.
 	CommonRenderPassArgs commonArgs = {
-		dsv,
+		dsvHandle,
 		m_rasterRootSignature,
 		m_viewport,
 		m_scissorRect,
-		m_cbvSrvUavHeap,
+		m_cbvSrvUavHeapGlobal,
 		m_cbvSrvUavDescriptorSize,
-		m_globalFrameDataCB,
+		m_currentFrameResource->globalFrameDataCB,
 		m_activeCamera->GetViewProjectionMatrix()
 	};
 
 	CommonRaytracingRenderPassArgs commonRTArgs = {
-		.cbvSrvUavHeap = m_cbvSrvUavHeap,
+		.cbvSrvUavHeap = m_cbvSrvUavHeapGlobal,
 		.cbvSrvUavDescSize = m_cbvSrvUavDescriptorSize,
 
 		.globalRootSig = m_RTGlobalRootSignature,
 
-		.rayGenShaderTable = &m_rayGenShaderTable,
-		.hitGroupShaderTable = &m_hitGroupShaderTable,
-		.missShaderTable = &m_missShaderTable
+		.rayGenShaderTable = &m_currentFrameResource->rayGenShaderTable,
+		.hitGroupShaderTable = &m_currentFrameResource->hitGroupShaderTable,
+		.missShaderTable = &m_currentFrameResource->missShaderTable
 	};
 
 	// This is supposed to be ran by different threads.
 	for (UINT context = 0; context < NumContexts; context++)
 	{
 		// Wait for start sync.
-		m_syncHandler.WaitStart(context);
+		m_currentFrameResource->syncHandler.WaitStart(context);
 
-		for (UINT passIndex = 0; passIndex < renderPassOrder.size(); passIndex++)
+		for (UINT passIndex = 0; passIndex < sRenderPassOrder.size(); passIndex++)
 		{
-			bool isLastRenderPass = passIndex == (renderPassOrder.size() - 1);
+			bool isLastRenderPass = passIndex == (sRenderPassOrder.size() - 1);
 
-			RenderPassType renderPassType = renderPassOrder[passIndex];
+			RenderPassType renderPassType = sRenderPassOrder[passIndex];
 			DX12RenderPass& renderPass = *m_renderPasses[renderPassType];
 
 			const std::vector<RenderObjectID>& passObjectIDs = renderPass.GetRenderableObjects();
@@ -302,8 +326,8 @@ void DX12Renderer::Render()
 				{
 					// Get RTV handle for the first GBuffer.
 					const CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle(
-						m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
-						RTVOffsetGBuffers,
+						m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
+						GlobalDescriptors::GetDescriptorOffset(RTVGBuffers),
 						m_rtvDescriptorSize
 					);
 
@@ -316,12 +340,12 @@ void DX12Renderer::Render()
 				{
 					if (context == 0)
 					{
-						auto commandList = renderPass.GetFirstCommandList();
+						auto commandList = renderPass.GetFirstCommandList(currentFrameIndex);
 
 						D3D12_RESOURCE_STATES gBufferResourceState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 						// Using the concept of better resource transitions depending on what type of render pipeline we have.
 						// If we know that a raytraced AO pass will come, we make sure that it also can be used outside of a pixel shader.
-						if (HasRenderPass(renderPassOrder, RaytracedAOPass))
+						if (HasRenderPass(sRenderPassOrder, RaytracedAOPass))
 						{
 							gBufferResourceState |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 						}
@@ -343,41 +367,49 @@ void DX12Renderer::Render()
 				{
 					if (context == 0)
 					{
-						auto commandList = renderPass.GetFirstCommandList();
+						auto commandList = renderPass.GetFirstCommandList(currentFrameIndex);
 
 						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, commandList);
 						
 						// Put resource barrier.
 						CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_middleTexture.Get());
 						commandList->ResourceBarrier(1, &uavBarrier);
-
-						for (const RenderObjectID renderObjectID : passObjectIDs)
-						{
-							UpdateTopLevelAccelerationStructure(renderObjectID, commandList);
-						}
 					}
 
-					renderPassArgs = RaytracedAORenderPassArgs {
+					std::vector<RayTracingRenderPackage> rayTracingRenderPackages;
+					for (RenderObjectID renderObjectID : passObjectIDs)
+					{
+						RayTracingRenderPackage rtRenderPackage;
+
+						rtRenderPackage.topLevelASBuffers = &m_currentFrameResource->topAccStructByID[renderObjectID];
+						rtRenderPackage.instanceCount = (UINT)m_renderInstancesByID[renderObjectID].size();
+
+						rayTracingRenderPackages.push_back(rtRenderPackage);
+					}
+
+					
+					renderPassArgs = RaytracedAORenderPassArgs{
 						.commonRTArgs = commonRTArgs,
 						.stateObject = m_RTPipelineState,
 						.frameCount = m_frameCount,
 						.screenWidth = m_width,
 						.screenHeight = m_height,
+						.renderPackages = rayTracingRenderPackages
 					};
 
 					if (isLastRenderPass && context == 0)
 					{
 						// Copy middle texture to back buffer.
-						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_COPY_SOURCE, mainThreadCommandListPost);
-						currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_COPY_DEST, mainThreadCommandListPost);
-						mainThreadCommandListPost->CopyResource(currentBackBuffer.Get(), m_middleTexture.Get());
+						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_COPY_SOURCE, postCommandList);
+						currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_COPY_DEST, postCommandList);
+						postCommandList->CopyResource(currentBackBuffer.Get(), m_middleTexture.Get());
 					}
 				}
 				else if (renderPassType == AccumulationPass)
 				{
 					if (context == 0)
 					{
-						auto commandList = renderPass.GetFirstCommandList();
+						auto commandList = renderPass.GetFirstCommandList(currentFrameIndex);
 
 						m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, commandList);
 
@@ -405,41 +437,41 @@ void DX12Renderer::Render()
 
 
 				// Render all render packages.
-				renderPass.Render(renderPackages, context, &renderPassArgs);
+				renderPass.Render(renderPackages, context, currentFrameIndex, &renderPassArgs);
 			}
 
 			// Signal that pass is done.
-			m_syncHandler.SetPass(context, renderPassType);
-			m_renderPasses[renderPassType]->Close(context);
+			m_currentFrameResource->syncHandler.SetPass(context, renderPassType);
+			m_renderPasses[renderPassType]->Close(currentFrameIndex, context);
 		}
 
 		// Signal end sync.
-		m_syncHandler.SetEnd(context);
+		m_currentFrameResource->syncHandler.SetEnd(context);
 	}
 
 	// Wait for all passes to finish on the CPU.
-	m_syncHandler.WaitEndAll();
+	m_currentFrameResource->syncHandler.WaitEndAll();
 
 	// Prepare back buffer for present.
-	currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_PRESENT, mainThreadCommandListPost);
+	currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_PRESENT, postCommandList);
 
 	// Close post command list.
-	mainThreadCommandListPost->Close() >> CHK_HR;
+	postCommandList->Close() >> CHK_HR;
 
 	// Add all command lists to the main command list.
-	for (RenderPassType renderPass : renderPassOrder)
+	for (RenderPassType renderPass : sRenderPassOrder)
 	{
 		for (UINT context = 0; context < NumContexts; context++)
 		{
 			if (m_renderPasses[renderPass]->IsEnabled())
 			{
-				commandLists.push_back(m_renderPasses[renderPass]->commandLists[context]);
+				commandLists.push_back(m_renderPasses[renderPass]->GetCommandList(context, currentFrameIndex));
 			}
 		}
 	}
 
 	// Add post command list to list of command lists.
-	commandLists.push_back(mainThreadCommandListPost);
+	commandLists.push_back(postCommandList);
 
 	// Execute all command lists.
 	{
@@ -447,14 +479,11 @@ void DX12Renderer::Render()
 		m_directCommandQueue->commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
 	}
 
-	// Insert fence that signifies command list completion.
-	m_directCommandQueue->Signal();
-
 	// Present
-	m_swapChain->Present(1, 0) >> CHK_HR;
+	m_swapChain->Present(0, 0) >> CHK_HR;
 
-	// Wait for the command queue to finish.
-	m_directCommandQueue->Wait();
+	UINT64 fenceVal = m_directCommandQueue->Signal();
+	m_currentFrameResource->fenceValue = fenceVal; // Save the fence val for this frame.
 
 	// Increment frame count.
 	m_frameCount++;
@@ -483,27 +512,28 @@ DX12Renderer::DX12Renderer(UINT width, UINT height, HWND windowHandle) :
 	InitPipeline();
 	InitAssets();
 	InitRaytracing();
+	InitFrameResources();
 }
 
 
 void DX12Renderer::InitPipeline()
 {
 	CreateDeviceAndSwapChain();
+	CreateAccumulationTexture();
+	CreateBackBuffers();
+	CreateDepthBuffer();
 	CreateGBuffers();
 	CreateMiddleTexture();
-	CreateAccumulationTexture();
-	CreateRTVHeap();
-	CreateRTVs();
-	CreateDepthBuffer();
-	CreateDSVHeap();
-	CreateDSV();
 
-	// TODO: Check if this makes sense to be in "init pipeline".
-	CreateConstantBuffers();
-	CreateCBVSRVUAVHeap();
-	CreateCBVs();
+	CreateDSVHeap();
+	CreateRTVHeap();
+	CreateCBVSRVUAVHeapGlobal();
+
+	CreateRTVs();
+	CreateDSV();
 	CreateSRVs();
 	CreateUAVs();
+
 }
 
 void DX12Renderer::CreateDeviceAndSwapChain()
@@ -586,7 +616,7 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 				.Quality = 0
 			},
 			.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
-			.BufferCount = BufferCount,
+			.BufferCount = BackBufferCount,
 			.Scaling = DXGI_SCALING_STRETCH,
 			.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
 			.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED,
@@ -662,21 +692,9 @@ void DX12Renderer::CreateGBuffers()
 	
 }
 
-CD3DX12_RESOURCE_DESC DX12Renderer::CreateBackbufferResourceDesc() const
-{
-	CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-		BackBufferFormat,
-		m_width,
-		m_height
-	);
-	resourceDesc.MipLevels = 1; // Match back buffer.
-
-	return resourceDesc;
-}
-
 void DX12Renderer::CreateMiddleTexture()
 {
-	CD3DX12_RESOURCE_DESC resourceDesc = CreateBackbufferResourceDesc();
+	CD3DX12_RESOURCE_DESC resourceDesc = CreateBackbufferResourceDesc(m_width, m_height);
 
 	// Render target when writing gbuffer info to it and unordered access in ray tracing shader when writing and reading to it.
 	resourceDesc.Flags = 
@@ -691,9 +709,22 @@ void DX12Renderer::CreateMiddleTexture()
 	);
 }
 
+void FrameResource::CreateTopLevelASs(ComPtr<ID3D12Device5> device)
+{
+	for (const RenderObjectID renderObjectID : sRTRenderObjectIDs)
+	{
+		CreateTopLevelAS(device, renderObjectID);
+	}
+}
+
 void DX12Renderer::CreateAccumulationTexture()
 {
-	CD3DX12_RESOURCE_DESC resourceDesc = CreateBackbufferResourceDesc();
+	CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+		BackBufferFormat,
+		m_width,
+		m_height
+	);
+	resourceDesc.MipLevels = 1; // Match back buffer.
 	resourceDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
 	m_accumulationTexture = CreateResource(
@@ -702,6 +733,16 @@ void DX12Renderer::CreateAccumulationTexture()
 		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
 		D3D12_HEAP_TYPE_DEFAULT
 	);
+}
+
+void DX12Renderer::CreateBackBuffers()
+{
+	for (UINT i = 0; i < BackBufferCount; i++)
+	{
+		m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_backBuffers[i])) >> CHK_HR;
+
+		NAME_D3D12_OBJECT_MEMBER_INDEXED(m_backBuffers, i, DX12Renderer);
+	}
 }
 
 void DX12Renderer::CreateRTVHeap()
@@ -713,38 +754,57 @@ void DX12Renderer::CreateRTVHeap()
 			.NodeMask = 0
 	};
 
-	m_device->CreateDescriptorHeap(&rtvDescriptorHeapDesc, IID_PPV_ARGS(&m_rtvHeap)) >> CHK_HR;
+	m_device->CreateDescriptorHeap(&rtvDescriptorHeapDesc, IID_PPV_ARGS(&m_rtvHeapGlobal)) >> CHK_HR;
 	m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
-	NAME_D3D12_OBJECT_MEMBER(m_rtvHeap, DX12Renderer);
+	NAME_D3D12_OBJECT_MEMBER(m_rtvHeapGlobal, DX12Renderer);
+}
+
+
+void FrameResource::CreateCommandResources(ComPtr<ID3D12Device5> device)
+{
+	// General.
+	{
+		device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&generalCommandAllocator));
+		NAME_D3D12_OBJECT_MEMBER(generalCommandAllocator, FrameResource);
+
+		device->CreateCommandList1(0, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_LIST_FLAG_NONE, IID_PPV_ARGS(&generalCommandList));
+		NAME_D3D12_OBJECT_MEMBER(generalCommandList, FrameResource);
+	}
+
+	for (UINT i = 0; i < CommandListIdentifier::NumCommandLists; i++)
+	{
+		device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocators[i]));
+		NAME_D3D12_OBJECT_MEMBER_INDEXED(commandAllocators, i, FrameResource);
+
+		device->CreateCommandList1(0, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_LIST_FLAG_NONE, IID_PPV_ARGS(&commandLists[i]));
+		NAME_D3D12_OBJECT_MEMBER_INDEXED(commandLists, i, FrameResource);
+	}
 }
 
 void DX12Renderer::CreateRTVs()
 {
-	for (UINT i = 0; i < BufferCount; i++)
+	for (UINT i = 0; i < BackBufferCount; i++)
 	{
-		m_swapChain->GetBuffer(i, IID_PPV_ARGS(&m_backBuffers[i])) >> CHK_HR;
-
-		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-		rtvHandle.Offset(RTVOffsets::RTVOffsetBackBuffers + i, m_rtvDescriptorSize);
+		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart());
+		rtvHandle.Offset(GlobalDescriptors::GetDescriptorOffset(RTVBackBuffers) + i, m_rtvDescriptorSize);
 
 		m_device->CreateRenderTargetView(m_backBuffers[i].Get(), nullptr, rtvHandle);
-
-		NAME_D3D12_OBJECT_MEMBER_INDEXED(m_backBuffers, i, DX12Renderer);
 	}
 
-	for (UINT i = 0; i < GBufferCount; i++)
+	// RTV for gbuffers.
+	for (UINT i = 0; i < GBufferIDCount; i++)
 	{
-		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-		rtvHandle.Offset(RTVOffsets::RTVOffsetGBuffers + i, m_rtvDescriptorSize);
+		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart());
+		rtvHandle.Offset(GlobalDescriptors::GetDescriptorOffset(RTVGBuffers) + i, m_rtvDescriptorSize);
 
 		m_device->CreateRenderTargetView(m_gBuffers[i].Get(), nullptr, rtvHandle);
 	}
 
-	// Create middletexture rtv.
+	// Create middle texture RTV.
 	{
-		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-		rtvHandle.Offset(RTVOffsets::RTVOffsetMiddleTexture, m_rtvDescriptorSize);
+		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart());
+		rtvHandle.Offset(GlobalDescriptors::GetDescriptorOffset(RTVMiddleTexture), m_rtvDescriptorSize);
 
 		m_device->CreateRenderTargetView(m_middleTexture.Get(), nullptr, rtvHandle);
 	}
@@ -783,25 +843,26 @@ void DX12Renderer::CreateDSVHeap()
 {
 	const D3D12_DESCRIPTOR_HEAP_DESC dsvDescriptorHeapDesc = {
 			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
-			.NumDescriptors = 1,
+			.NumDescriptors = BackBufferCount, // TODONOW: Make this proper count and future offsets.
 			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
 			.NodeMask = 0
 	};
 
-	m_device->CreateDescriptorHeap(&dsvDescriptorHeapDesc, IID_PPV_ARGS(&m_dsvHeap)) >> CHK_HR;
+	m_device->CreateDescriptorHeap(&dsvDescriptorHeapDesc, IID_PPV_ARGS(&m_dsvHeapGlobal)) >> CHK_HR;
+	m_dsvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
 
-
-	NAME_D3D12_OBJECT_MEMBER(m_dsvHeap, DX12Renderer);
+	NAME_D3D12_OBJECT_MEMBER(m_dsvHeapGlobal, DX12Renderer);
 }
 
 void DX12Renderer::CreateDSV()
 {
-	CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
+	CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(m_dsvHeapGlobal->GetCPUDescriptorHandleForHeapStart());
+	dsvHandle.Offset(GlobalDescriptors::GetDescriptorOffset(DSVScene), m_dsvDescriptorSize);
 
 	m_device->CreateDepthStencilView(m_depthBuffer.Get(), nullptr, dsvHandle);
 }
 
-void DX12Renderer::CreateConstantBuffers()
+void FrameResource::CreateConstantBuffers(ComPtr<ID3D12Device5> device)
 {
 	// Create instances CBs.
 	{
@@ -810,13 +871,13 @@ void DX12Renderer::CreateConstantBuffers()
 
 		const CD3DX12_RESOURCE_DESC constantBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(instanceBufferSize);
 
-		m_perInstanceCB = CreateUploadResource(m_device, constantBufferDesc);
-		NAME_D3D12_OBJECT_MEMBER(m_perInstanceCB, DX12Renderer);
+		perInstanceCB = CreateUploadResource(device, constantBufferDesc);
+		NAME_D3D12_OBJECT_MEMBER(perInstanceCB, FrameResource);
 
 		// Map and initialize the constant buffer.
 		{
 			InstanceConstants* pConstantBufferData;
-			m_perInstanceCB.resource->Map(0, nullptr, reinterpret_cast<void**>(&pConstantBufferData)) >> CHK_HR;
+			perInstanceCB.resource->Map(0, nullptr, reinterpret_cast<void**>(&pConstantBufferData)) >> CHK_HR;
 
 			dx::XMMATRIX modelMatrix = dx::XMMatrixIdentity();
 
@@ -826,7 +887,7 @@ void DX12Renderer::CreateConstantBuffers()
 				dx::XMStoreFloat4x4(&pConstantBufferData[i].modelMatrix, modelMatrix);
 			}
 
-			m_perInstanceCB.resource->Unmap(0, nullptr);
+			perInstanceCB.resource->Unmap(0, nullptr);
 		}
 	}
 
@@ -836,8 +897,8 @@ void DX12Renderer::CreateConstantBuffers()
 		
 		const CD3DX12_RESOURCE_DESC constantBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(globalFrameDataSize * 1); // Only one instance.
 
-		m_globalFrameDataCB = CreateUploadResource(m_device, constantBufferDesc);
-		NAME_D3D12_OBJECT_MEMBER(m_globalFrameDataCB, DX12Renderer);
+		globalFrameDataCB = CreateUploadResource(device, constantBufferDesc);
+		NAME_D3D12_OBJECT_MEMBER(globalFrameDataCB, FrameResource);
 
 		// Initialize some values.
 		GlobalFrameData globalFrameData = {
@@ -845,93 +906,74 @@ void DX12Renderer::CreateConstantBuffers()
 			.accumulatedFrames = 0,
 			.time = 0.0f
 		};
-		MapDataToBuffer(m_globalFrameDataCB, &globalFrameData, sizeof(GlobalFrameData));
+		MapDataToBuffer(globalFrameDataCB, &globalFrameData, sizeof(GlobalFrameData));
 	}
 
 }
 
-void DX12Renderer::CreateCBVSRVUAVHeap()
+void DX12Renderer::CreateCBVSRVUAVHeapGlobal()
 {
+	UINT frameCBVSRVUAVDescriptors = GlobalDescriptors::MaxGlobalCBVSRVUAVDescriptors + FrameDescriptors::MaxFrameCBVSRVUAVDescriptors * BackBufferCount;
 	const D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDescCBVSRVUAV =
 	{
 		.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-		.NumDescriptors = MaxCBVSRVUAVDescriptors,
+		.NumDescriptors = frameCBVSRVUAVDescriptors,
 		.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
 		.NodeMask = 0
 	};
 
-	m_device->CreateDescriptorHeap(&descriptorHeapDescCBVSRVUAV, IID_PPV_ARGS(&m_cbvSrvUavHeap)) >> CHK_HR;
+	m_device->CreateDescriptorHeap(&descriptorHeapDescCBVSRVUAV, IID_PPV_ARGS(&m_cbvSrvUavHeapGlobal)) >> CHK_HR;
 	m_cbvSrvUavDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-	NAME_D3D12_OBJECT_MEMBER(m_cbvSrvUavHeap, DX12Renderer);
+	NAME_D3D12_OBJECT_MEMBER(m_cbvSrvUavHeapGlobal, DX12Renderer);
 }
 
-void DX12Renderer::CreateCBVs()
+void FrameResource::CreateFrameCBVs(ComPtr<ID3D12Device5> device, ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeapGlobal, UINT cbvSrvUavDescriptorSize)
 {
 	// Create all CBV descriptors for render instances.
 	for (UINT i = 0; i < MaxRenderInstances; i++)
 	{
 		constexpr UINT instanceDataSize = DX12Abstractions::CalculateConstantBufferByteSize(sizeof(InstanceConstants));
 
-		D3D12_GPU_VIRTUAL_ADDRESS instanceCBAddress = m_perInstanceCB.resource->GetGPUVirtualAddress();
+		D3D12_GPU_VIRTUAL_ADDRESS instanceCBAddress = perInstanceCB.resource->GetGPUVirtualAddress();
 		// Set the offset for the data location inside the upload buffer.
 		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {
 			.BufferLocation = instanceCBAddress + i * instanceDataSize,
 			.SizeInBytes = instanceDataSize
 		};
 
-		// Set the offset for the handle location inside the descriptor heap.
-		// This was noticed to be needed inside the loop to function without getting a memory exception.
-		// My theory is that there is no guarantee that the start of the memory wont change as the heap fills up dynamically, because of reallocation.
-		// The start of the actual memory therefore needs to be fetched each loop to get the proper memory location.
-		CD3DX12_CPU_DESCRIPTOR_HANDLE instanceCBVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
-		instanceCBVHandle.Offset(CBVSRVUAVOffsets::CBVOffsetRenderInstance + i, m_cbvSrvUavDescriptorSize);
+		CD3DX12_CPU_DESCRIPTOR_HANDLE instanceCBVHandle(cbvSrvUavHeapGlobal->GetCPUDescriptorHandleForHeapStart());
+		instanceCBVHandle.Offset(
+			FrameDescriptors::GetDescriptorOffsetCBVSRVUAV(CBVRenderInstance, m_frameIndex) + i,
+			cbvSrvUavDescriptorSize
+		);
 
-		m_device->CreateConstantBufferView(&cbvDesc, instanceCBVHandle);
+		device->CreateConstantBufferView(&cbvDesc, instanceCBVHandle);
 	} 
 
 	// For global data.
 	{
 		constexpr UINT globalFrameDataSize = DX12Abstractions::CalculateConstantBufferByteSize(sizeof(GlobalFrameData));
 
-		D3D12_GPU_VIRTUAL_ADDRESS frameDataCBAddress = m_perInstanceCB.resource->GetGPUVirtualAddress();
+		D3D12_GPU_VIRTUAL_ADDRESS frameDataCBAddress = perInstanceCB.resource->GetGPUVirtualAddress();
 		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {
 			.BufferLocation = frameDataCBAddress,
 			.SizeInBytes = globalFrameDataSize
 		};
 
 		// Calculate offset of CBV.
-		CD3DX12_CPU_DESCRIPTOR_HANDLE globalFrameDataCBVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
-		globalFrameDataCBVHandle.Offset(CBVSRVUAVOffsets::CBVOffsetGlobalFrameData, m_cbvSrvUavDescriptorSize);
+		CD3DX12_CPU_DESCRIPTOR_HANDLE frameDataCBVHandle(cbvSrvUavHeapGlobal->GetCPUDescriptorHandleForHeapStart());
+		frameDataCBVHandle.Offset(FrameDescriptors::GetDescriptorOffsetCBVSRVUAV(CBVFrameData, m_frameIndex), cbvSrvUavDescriptorSize);
 
-		m_device->CreateConstantBufferView(&cbvDesc, globalFrameDataCBVHandle);
+		device->CreateConstantBufferView(&cbvDesc, frameDataCBVHandle);
 	}
-}
-
-
-D3D12_SHADER_RESOURCE_VIEW_DESC DX12Renderer::CreateBackbufferSRVDesc() const
-{
-	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
-	srvDesc.Format = BackBufferFormat;
-	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-	srvDesc.Texture2D = {
-		.MostDetailedMip = 0,
-		.MipLevels = (UINT)(-1),
-		.PlaneSlice = 0,
-		.ResourceMinLODClamp = 0.0f
-	};
-
-	return srvDesc;
 }
 
 void DX12Renderer::CreateSRVs()
 {
 	// SRVs for gbuffers.
-	for (UINT i = 0; i < CBVSRVUAVCounts::SRVCountGbuffers; i++)
+	for (UINT i = 0; i < GlobalDescriptors::GetDescriptorCount(SRVGBuffers); i++)
 	{
-		UINT SRVIndex = i + CBVSRVUAVOffsets::SRVOffsetGBuffers;
-
 		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
 		srvDesc.Format = GBufferFormats[i];
 		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -943,8 +985,8 @@ void DX12Renderer::CreateSRVs()
 			.ResourceMinLODClamp = 0.0f
 		};
 		
-		CD3DX12_CPU_DESCRIPTOR_HANDLE gbufferSRVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
-		gbufferSRVHandle.Offset(SRVIndex, m_cbvSrvUavDescriptorSize);
+		CD3DX12_CPU_DESCRIPTOR_HANDLE gbufferSRVHandle(m_cbvSrvUavHeapGlobal->GetCPUDescriptorHandleForHeapStart());
+		gbufferSRVHandle.Offset(GlobalDescriptors::GetDescriptorOffset(SRVGBuffers) + i, m_cbvSrvUavDescriptorSize);
 
 		m_device->CreateShaderResourceView(m_gBuffers[i].Get(), &srvDesc, gbufferSRVHandle);
 	}
@@ -953,34 +995,29 @@ void DX12Renderer::CreateSRVs()
 	{
 		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = CreateBackbufferSRVDesc();
 
-		CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureSRVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
-		middleTextureSRVHandle.Offset(CBVSRVUAVOffsets::SRVOffsetMiddleTexture, m_cbvSrvUavDescriptorSize);
+		CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureSRVHandle(m_cbvSrvUavHeapGlobal->GetCPUDescriptorHandleForHeapStart());
+		middleTextureSRVHandle.Offset(GlobalDescriptors::GetDescriptorOffset(SRVMiddleTexture), m_cbvSrvUavDescriptorSize);
 
 		m_device->CreateShaderResourceView(m_middleTexture.Get(), &srvDesc, middleTextureSRVHandle);
 	}
-
-	// SRV for accumulation texture
-	{
-		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = CreateBackbufferSRVDesc();
-
-		CD3DX12_CPU_DESCRIPTOR_HANDLE accumilationTextureSRVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
-		accumilationTextureSRVHandle.Offset(CBVSRVUAVOffsets::SRVOffsetAccumulationTexture, m_cbvSrvUavDescriptorSize);
-
-		m_device->CreateShaderResourceView(m_accumulationTexture.Get(), &srvDesc, accumilationTextureSRVHandle);
-	}
 }
 
-D3D12_UNORDERED_ACCESS_VIEW_DESC DX12Renderer::CreateBackbufferUAVDesc() const
-{
-	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc;
-	uavDesc.Format = BackBufferFormat;
-	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-	uavDesc.Texture2D = {
-		.MipSlice = 0,
-		.PlaneSlice = 0
-	};
 
-	return uavDesc;
+
+FrameResource::FrameResource(UINT frameIndex, ComPtr<ID3D12Resource> backBuffer, FrameResourceInputs inputs)
+	: syncHandler(), fenceValue(0), m_frameIndex(frameIndex)
+{
+	const UINT width = (UINT)inputs.viewPort.Width;
+	const UINT height = (UINT)inputs.viewPort.Height;
+
+	CreateCommandResources(inputs.device);
+	CreateTopLevelASs(inputs.device);
+	CreateConstantBuffers(inputs.device);
+
+	CreateFrameCBVs(inputs.device, inputs.cbvSrvUavHeapGlobal, inputs.cbvSrvUavDescriptorSize);
+
+	CreateTopLevelASDescriptors(inputs.device, inputs.cbvSrvUavHeapGlobal, inputs.cbvSrvUavDescriptorSize);
+	CreateShaderTables(inputs);
 }
 
 void DX12Renderer::CreateUAVs()
@@ -989,19 +1026,18 @@ void DX12Renderer::CreateUAVs()
 	{
 		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = CreateBackbufferUAVDesc();
 
-		CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureUAVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
-		middleTextureUAVHandle.Offset(CBVSRVUAVOffsets::UAVOffsetMiddleTexture, m_rtvDescriptorSize);
+		CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureUAVHandle(m_cbvSrvUavHeapGlobal->GetCPUDescriptorHandleForHeapStart());
+		middleTextureUAVHandle.Offset(GlobalDescriptors::GetDescriptorOffset(UAVMiddleTexture), m_cbvSrvUavDescriptorSize);
 
 		m_device->CreateUnorderedAccessView(m_middleTexture.Get(), nullptr, &uavDesc, middleTextureUAVHandle);
 	}
-
 
 	// UAV for accumulation texture.
 	{
 		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = CreateBackbufferUAVDesc();
 
-		CD3DX12_CPU_DESCRIPTOR_HANDLE accumulationTextureUAVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
-		accumulationTextureUAVHandle.Offset(CBVSRVUAVOffsets::UAVOffsetAccumulationTexture, m_rtvDescriptorSize);
+		CD3DX12_CPU_DESCRIPTOR_HANDLE accumulationTextureUAVHandle(m_cbvSrvUavHeapGlobal->GetCPUDescriptorHandleForHeapStart());
+		accumulationTextureUAVHandle.Offset(GlobalDescriptors::GetDescriptorOffset(UAVAccumulationTexture), m_cbvSrvUavDescriptorSize);
 
 		m_device->CreateUnorderedAccessView(m_accumulationTexture.Get(), nullptr, &uavDesc, accumulationTextureUAVHandle);
 	}
@@ -1034,13 +1070,17 @@ void DX12Renderer::CreateRootSignatures()
 		// Add descriptor table for instance specific constants.
 		CD3DX12_DESCRIPTOR_RANGE instanceCBVRange;
 		instanceCBVRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, RasterShaderRegisters::CBVRegisters::CBVDescriptorRange);
-		rootParameters[DefaultRootParameterIdx::CBVTableIdx].InitAsDescriptorTable(1, &instanceCBVRange, D3D12_SHADER_VISIBILITY_VERTEX);
+		rootParameters[DefaultRootParameterIdx::CBVTableIdx].InitAsDescriptorTable(
+			1, 
+			&instanceCBVRange, 
+			D3D12_SHADER_VISIBILITY_VERTEX
+		);
 
-		// Add descriptor range for gbuffers.
+		// Add descriptor SRV range for gbuffers.
 		CD3DX12_DESCRIPTOR_RANGE gBufferSRVRange;
 		gBufferSRVRange.Init(
 			D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 
-			CBVSRVUAVCounts::SRVCountGbuffers, 
+			GlobalDescriptors::GetDescriptorCount(SRVGBuffers), 
 			RasterShaderRegisters::SRVRegisters::SRVDescriptorRange
 		);
 
@@ -1048,20 +1088,20 @@ void DX12Renderer::CreateRootSignatures()
 		CD3DX12_DESCRIPTOR_RANGE middleTextureSRVRange;
 		middleTextureSRVRange.Init(
 			D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-			CBVSRVUAVCounts::SRVCountMiddleTexture,
-			RasterShaderRegisters::SRVRegisters::SRVDescriptorRange + CBVSRVUAVCounts::SRVCountGbuffers,
+			GlobalDescriptors::GetDescriptorCount(SRVMiddleTexture),
+			gBufferSRVRange.BaseShaderRegister + gBufferSRVRange.NumDescriptors,
 			0,
-			CBVSRVUAVOffsets::SRVOffsetMiddleTexture - CBVSRVUAVOffsets::SRVOffsetGBuffers
+			GlobalDescriptors::GetDescriptorRelativeOffset(SRVGBuffers, SRVMiddleTexture)
 		);
 
 		// Descriptor range for accumulation UAV.
 		CD3DX12_DESCRIPTOR_RANGE accumulationUAVRange;
 		accumulationUAVRange.Init(
 			D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
-			CBVSRVUAVCounts::UAVCountAccumulationTexture,
+			GlobalDescriptors::GetDescriptorCount(UAVAccumulationTexture),
 			RasterShaderRegisters::UAVRegisters::UAVDescriptorRange,
 			0,
-			CBVSRVUAVOffsets::UAVOffsetAccumulationTexture - CBVSRVUAVOffsets::SRVOffsetGBuffers
+			GlobalDescriptors::GetDescriptorRelativeOffset(SRVGBuffers, UAVAccumulationTexture)
 		);
 
 		std::array<CD3DX12_DESCRIPTOR_RANGE, 3> UAVSRVTable = { { gBufferSRVRange, middleTextureSRVRange, accumulationUAVRange } };
@@ -1090,10 +1130,10 @@ void DX12Renderer::CreateRootSignatures()
 
 void DX12Renderer::CreatePSOs()
 {
-	RegisterRenderPass(RenderPassType::DeferredGBufferPass);
-	RegisterRenderPass(RenderPassType::DeferredLightingPass);
-	RegisterRenderPass(RenderPassType::RaytracedAOPass);
-	RegisterRenderPass(RenderPassType::AccumulationPass);
+	for (RenderPassType passType : sPassesToRegister)
+	{
+		RegisterRenderPass(passType);
+	}
 }
 
 
@@ -1230,8 +1270,6 @@ void DX12Renderer::InitRaytracing()
 {
 	CreateAccelerationStructures();
 	CreateRaytracingPipelineState();
-	CreateShaderTables();
-	CreateTopLevelASDescriptors();
 
 	// Wait for all work to be done.
 	m_directCommandQueue->SignalAndWait();
@@ -1243,7 +1281,6 @@ void DX12Renderer::CreateAccelerationStructures()
 	auto commandList = m_directCommandQueue->CreateCommandList(m_device);
 
 	CreateBottomLevelASs(commandList);
-	CreateTopLevelASs(commandList);
 
 	commandList->Close();
 
@@ -1255,15 +1292,8 @@ void DX12Renderer::CreateAccelerationStructures()
 
 void DX12Renderer::CreateBottomLevelASs(ComPtr<ID3D12GraphicsCommandList4> commandList)
 {
-	// Cube
+	for (const RenderObjectID objectID : sRTRenderObjectIDs)
 	{
-		RenderObjectID objectID = RenderObjectID::Cube;
-		CreateBottomLevelAccelerationStructure(objectID, commandList);
-	}
-
-	// OBJ Model
-	{
-		RenderObjectID objectID = RenderObjectID::OBJModel1;
 		CreateBottomLevelAccelerationStructure(objectID, commandList);
 	}
 }
@@ -1335,40 +1365,22 @@ void DX12Renderer::CreateBottomLevelAccelerationStructure(RenderObjectID objectI
 	commandList->BuildRaytracingAccelerationStructure(&asDesc, 0, nullptr);
 }
 
-void DX12Renderer::CreateTopLevelASs(ComPtr<ID3D12GraphicsCommandList4> commandList)
+void FrameResource::CreateTopLevelAS(ComPtr<ID3D12Device5> device, RenderObjectID renderObjectID)
 {
-	// Cube
-	{
-		RenderObjectID objectID = RenderObjectID::Cube;
-		CreateTopLevelAccelerationStructure(objectID, commandList);
-	}
-
-	// OBJ Model
-	{
-		RenderObjectID objectID = RenderObjectID::OBJModel1;
-		CreateTopLevelAccelerationStructure(objectID, commandList);
-	}
-}
-
-void DX12Renderer::CreateTopLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList)
-{
-	AccelerationStructureBuffers& bottomAccStruct = m_bottomAccStructByID[objectID];
-
-	// First, get the size of the TLAS buffers and create them
 	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
 	inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
 	inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
-	inputs.NumDescs = (UINT)m_renderInstancesByID[objectID].size();
+	inputs.NumDescs = MaxRTInstancesPerTopLevel;
 	inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
 
-	AccelerationStructureBuffers& topAccStruct = m_topAccStructByID[objectID];
+	AccelerationStructureBuffers topAccStruct = {};
 
 	D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info;
-	m_device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+	device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
 
 	CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(info.ScratchDataSizeInBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 	topAccStruct.scratch = CreateResource(
-		m_device,
+		device,
 		resourceDesc,
 		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
 		D3D12_HEAP_TYPE_DEFAULT
@@ -1376,22 +1388,22 @@ void DX12Renderer::CreateTopLevelAccelerationStructure(RenderObjectID objectID, 
 
 	resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(info.ResultDataMaxSizeInBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 	topAccStruct.result = CreateResource(
-		m_device,
+		device,
 		resourceDesc,
 		D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
 		D3D12_HEAP_TYPE_DEFAULT
 	);
 
 	resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * inputs.NumDescs);
-	topAccStruct.instanceDesc = CreateUploadResource(m_device, resourceDesc);
+	topAccStruct.instanceDesc = CreateUploadResource(device, resourceDesc);
 
-	UpdateTopLevelAccelerationStructure(objectID, commandList);
+	topAccStructByID[renderObjectID] = topAccStruct;
 }
 
 void DX12Renderer::CreateRaytracingPipelineState()
 {
 	constexpr UINT MaxSubObjects = 100u;
-	std::array<D3D12_STATE_SUBOBJECT, 100u> soMemory{};
+	std::array<D3D12_STATE_SUBOBJECT, MaxSubObjects> soMemory{};
 	UINT totalSubobjects = 0u;
 
 	auto GetNextSubObject = [&]()
@@ -1556,8 +1568,6 @@ void DX12Renderer::CreateRaytracingPipelineState()
 	desc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
 
 	m_device->CreateStateObject(&desc, IID_PPV_ARGS(&m_RTPipelineState)) >> CHK_HR;
-
-	
 }
 
 
@@ -1571,7 +1581,7 @@ void DX12Renderer::CreateRayGenLocalRootSignature(ComPtr<ID3D12RootSignature>& r
 		// Add root descriptor table for TLAS shader resource.
 		srvRangeTLAS.Init(
 			D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-			CBVSRVUAVCounts::SRVCountTLAS,
+			FrameDescriptors::GetDescriptorCount(SRVTopLevelAS),
 			RTShaderRegisters::SRVRegistersRayGen::SRVDescriptorTableTLASRegister
 		);
 		rootParameters[RTRayGenParameterIdx::RayGenSRVTableTLASIdx].InitAsDescriptorTable(1, &srvRangeTLAS, D3D12_SHADER_VISIBILITY_ALL);
@@ -1579,7 +1589,7 @@ void DX12Renderer::CreateRayGenLocalRootSignature(ComPtr<ID3D12RootSignature>& r
 		// Add root descriptor table for shader resources (gbuffers).
 		srvRangeGbuffers.Init(
 			D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-			CBVSRVUAVCounts::SRVCountGbuffers,
+			GlobalDescriptors::GetDescriptorCount(SRVGBuffers),
 			RTShaderRegisters::SRVRegistersRayGen::SRVDescriptorTableGbuffersRegister
 		);
 		rootParameters[RTRayGenParameterIdx::RayGenSRVTableGbuffersIdx].InitAsDescriptorTable(1, &srvRangeGbuffers, D3D12_SHADER_VISIBILITY_ALL);
@@ -1587,7 +1597,7 @@ void DX12Renderer::CreateRayGenLocalRootSignature(ComPtr<ID3D12RootSignature>& r
 		// Add root descriptor for UAV that is going to be written to.
 		uavRange.Init(
 			D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 
-			CBVSRVUAVCounts::SRVCountMiddleTexture, 
+			GlobalDescriptors::GetDescriptorCount(SRVMiddleTexture), 
 			RTShaderRegisters::UAVRegistersRayGen::UAVDescriptorRegister
 		);
 		rootParameters[RTRayGenParameterIdx::RayGenUAVTableIdx].InitAsDescriptorTable(1, &uavRange, D3D12_SHADER_VISIBILITY_ALL);
@@ -1646,10 +1656,41 @@ void DX12Renderer::CreateGlobalRootSignature(ComPtr<ID3D12RootSignature>& rootSi
 	SerializeAndCreateRootSig(rootSignatureDesc, rootSig);
 }
 
-void DX12Renderer::CreateShaderTables()
+void DX12Renderer::InitFrameResources()
+{
+	FrameResource::FrameResourceInputs inputs = {
+		.device = m_device,
+		.viewPort = m_viewport,
+		.dsvHeap = m_dsvHeapGlobal,
+		.cbvSrvUavHeapGlobal = m_cbvSrvUavHeapGlobal,
+		.cbvSrvUavDescriptorSize = m_cbvSrvUavDescriptorSize,
+		.rtvHeap = m_rtvHeapGlobal,
+		.rtPipelineStateObject = m_RTPipelineState,
+	};
+
+	for (UINT frameIndex = 0; frameIndex < BackBufferCount; frameIndex++)
+	{
+		m_frameResources[frameIndex] = std::make_unique<FrameResource>(frameIndex, m_backBuffers[frameIndex], inputs);
+	}
+
+	for (RenderPassType passType : sPassesToRegister)
+	{
+		// Register render passes to all sync handlers.
+		for (UINT i = 0; i < m_frameResources.size(); i++)
+		{
+			FrameResource* frameResource = m_frameResources[i].get();
+
+			frameResource->syncHandler.AddUniquePassSync(passType);
+		}
+	}
+
+	m_currentFrameResource = m_frameResources[0].get();
+}
+
+void FrameResource::CreateShaderTables(FrameResourceInputs inputs)
 {
 	ComPtr<ID3D12StateObjectProperties> RTStateObjectProps = nullptr;
-	m_RTPipelineState->QueryInterface(IID_PPV_ARGS(&RTStateObjectProps)) >> CHK_HR;
+	inputs.rtPipelineStateObject->QueryInterface(IID_PPV_ARGS(&RTStateObjectProps)) >> CHK_HR;
 
 	// Raygen table.
 	{
@@ -1664,24 +1705,33 @@ void DX12Renderer::CreateShaderTables()
 
 		// Set the descriptor table start for middle texture.
 		{
-			CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(m_cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-			uavHandle.Offset(CBVSRVUAVOffsets::UAVOffsetMiddleTexture, m_cbvSrvUavDescriptorSize);
+			CD3DX12_GPU_DESCRIPTOR_HANDLE uavHandle(inputs.cbvSrvUavHeapGlobal->GetGPUDescriptorHandleForHeapStart());
+			uavHandle.Offset(
+				GlobalDescriptors::GetDescriptorOffset(UAVMiddleTexture),
+				inputs.cbvSrvUavDescriptorSize
+			);
 		
 			tableData.UAVDescriptorTableMiddleTexture = uavHandle.ptr;
 		}
 
 		// Set TLAS SRV.
 		{
-			CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(m_cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-			srvHandle.Offset(CBVSRVUAVOffsets::SRVOffsetTLAS, m_cbvSrvUavDescriptorSize);
+			CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(inputs.cbvSrvUavHeapGlobal->GetGPUDescriptorHandleForHeapStart());
+			srvHandle.Offset(
+				FrameDescriptors::GetDescriptorOffsetCBVSRVUAV(SRVTopLevelAS, m_frameIndex),
+				inputs.cbvSrvUavDescriptorSize
+			);
 
 			tableData.SRVDescriptorTableTopLevelAS = srvHandle.ptr;
 		}
 		
 		// Set descriptor table for gbuffer start.
 		{
-			auto descHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(m_cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart());
-			descHeapHandle.Offset(CBVSRVUAVOffsets::SRVOffsetGBuffers, m_cbvSrvUavDescriptorSize);
+			auto descHeapHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(inputs.cbvSrvUavHeapGlobal->GetGPUDescriptorHandleForHeapStart());
+			descHeapHandle.Offset(
+				GlobalDescriptors::GetDescriptorOffset(SRVGBuffers),
+				inputs.cbvSrvUavDescriptorSize
+			);
 
 			tableData.SRVDescriptorTableGbuffers = descHeapHandle.ptr;
 		}
@@ -1695,17 +1745,17 @@ void DX12Renderer::CreateShaderTables()
 			RAY_GEN_SHADER_TABLE_DATA tabledata0;
 		};
 
-		m_rayGenShaderTable.strideInBytes = sizeof(MaxSizeStruct);
-		m_rayGenShaderTable.sizeInBytes = m_rayGenShaderTable.strideInBytes * 1; // A single ray gen table for now.
+		rayGenShaderTable.strideInBytes = sizeof(MaxSizeStruct);
+		rayGenShaderTable.sizeInBytes = rayGenShaderTable.strideInBytes * 1; // A single ray gen table for now.
 		{
-			CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(m_rayGenShaderTable.sizeInBytes);
-			m_rayGenShaderTable.tableResource = CreateUploadResource(
-				m_device,
+			CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(rayGenShaderTable.sizeInBytes);
+			rayGenShaderTable.tableResource = CreateUploadResource(
+				inputs.device,
 				resourceDesc
 			);
 		}
 
-		MapDataToBuffer(m_rayGenShaderTable.tableResource, &tableData, sizeof(tableData));
+		MapDataToBuffer(rayGenShaderTable.tableResource, &tableData, sizeof(tableData));
 	}
 
 	// Miss table.
@@ -1724,17 +1774,17 @@ void DX12Renderer::CreateShaderTables()
 			MISS_SHADER_TABLE_DATA tabledata0;
 		};
 
-		m_missShaderTable.strideInBytes = sizeof(MaxSizeStruct);
-		m_missShaderTable.sizeInBytes = m_missShaderTable.strideInBytes * 1; // A single miss table for now.
+		missShaderTable.strideInBytes = sizeof(MaxSizeStruct);
+		missShaderTable.sizeInBytes = missShaderTable.strideInBytes * 1; // A single miss table for now.
 		{
-			CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(m_missShaderTable.sizeInBytes);
-			m_missShaderTable.tableResource = CreateUploadResource(
-				m_device,
+			CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(missShaderTable.sizeInBytes);
+			missShaderTable.tableResource = CreateUploadResource(
+				inputs.device,
 				resourceDesc
 			);
 		}
 
-		MapDataToBuffer(m_missShaderTable.tableResource, &tableData, sizeof(tableData));
+		MapDataToBuffer(missShaderTable.tableResource, &tableData, sizeof(tableData));
 	}
 
 	// Hit program table.
@@ -1753,37 +1803,47 @@ void DX12Renderer::CreateShaderTables()
 			HIT_GROUP_SHADER_TABLE_DATA tabledata0;
 		};
 
-		m_hitGroupShaderTable.strideInBytes = sizeof(MaxSizeStruct);
-		m_hitGroupShaderTable.sizeInBytes = m_hitGroupShaderTable.strideInBytes * 1; // A single hit group for now.
+		hitGroupShaderTable.strideInBytes = sizeof(MaxSizeStruct);
+		hitGroupShaderTable.sizeInBytes = hitGroupShaderTable.strideInBytes * 1; // A single hit group for now.
 		{
-			CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(m_hitGroupShaderTable.sizeInBytes);
-			m_hitGroupShaderTable.tableResource = CreateUploadResource(
-				m_device,
+			CD3DX12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(hitGroupShaderTable.sizeInBytes);
+			hitGroupShaderTable.tableResource = CreateUploadResource(
+				inputs.device,
 				resourceDesc
 			);
 		}
 
-		MapDataToBuffer(m_hitGroupShaderTable.tableResource, &tableData, sizeof(tableData));
+		MapDataToBuffer(hitGroupShaderTable.tableResource, &tableData, sizeof(tableData));
 	}
 }
 
-void DX12Renderer::CreateTopLevelASDescriptors()
+void FrameResource::UpdateFrameResources(const FrameResourceUpdateInputs inputs)
 {
-	CreateTopLevelASDescriptor(RenderObjectID::Cube);
+	UpdateInstanceConstantBuffers(inputs);
+	UpdateGlobalFrameDataBuffer(inputs);
+	UpdateTopLevelAccelerationStructure(inputs, RenderObjectID::Cube);
 }
 
-void DX12Renderer::CreateTopLevelASDescriptor(RenderObjectID objectID)
+void FrameResource::CreateTopLevelASDescriptors(ComPtr<ID3D12Device5> device, ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeap, UINT cbvSrvUavDescriptorSize)
+{
+	for (RenderObjectID objectID : sRTRenderObjectIDs)
+	{
+		CreateTopLevelASDescriptor(device, objectID, cbvSrvUavHeap, cbvSrvUavDescriptorSize);
+	}
+}
+
+void FrameResource::CreateTopLevelASDescriptor(ComPtr<ID3D12Device5> device, RenderObjectID objectID, ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeap, UINT cbvSrvUavDescriptorSize)
 {
 	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
 	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-	srvDesc.RaytracingAccelerationStructure.Location = m_topAccStructByID[objectID].result.resource->GetGPUVirtualAddress();
+	srvDesc.RaytracingAccelerationStructure.Location = topAccStructByID[objectID].result.resource->GetGPUVirtualAddress();
 
-	CD3DX12_CPU_DESCRIPTOR_HANDLE tlasSRVHandle(m_cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
-	tlasSRVHandle.Offset(CBVSRVUAVOffsets::SRVOffsetTLAS, m_cbvSrvUavDescriptorSize);
+	CD3DX12_CPU_DESCRIPTOR_HANDLE tlasSRVHandle(cbvSrvUavHeap->GetCPUDescriptorHandleForHeapStart());
+	tlasSRVHandle.Offset(FrameDescriptors::GetDescriptorOffsetCBVSRVUAV(SRVTopLevelAS, m_frameIndex), cbvSrvUavDescriptorSize);
 
 	// Use nullptr because the resource is already referenced in description of the view.
-	m_device->CreateShaderResourceView(nullptr, &srvDesc, tlasSRVHandle);
+	device->CreateShaderResourceView(nullptr, &srvDesc, tlasSRVHandle);
 }
 
 void DX12Renderer::SerializeAndCreateRootSig(CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc, ComPtr<ID3D12RootSignature>& rootSig)
@@ -1824,8 +1884,8 @@ void DX12Renderer::UpdateCamera()
 {
 	// Update camera before rendering.
 	dx::XMVECTOR startPos = dx::XMVectorSet(0.0f, 0.0f, -13.0f, 1.0f);
-	//float angle = m_time * dx::XM_2PI / 20.0f;
-	float angle = 0.0f;
+	float angle = m_time * dx::XM_2PI / 20.0f;
+	//float angle = 0.0f;
 	
 	dx::XMMATRIX rotationMatrix = dx::XMMatrixRotationNormal(dx::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), angle);
 	dx::XMVECTOR newPos = dx::XMVector3Transform(startPos, rotationMatrix);
@@ -1835,51 +1895,46 @@ void DX12Renderer::UpdateCamera()
 	m_activeCamera->UpdateViewProjectionMatrix();
 }
 
-void DX12Renderer::UpdateInstanceConstantBuffers()
+void FrameResource::UpdateInstanceConstantBuffers(const FrameResourceUpdateInputs& inputs)
 {
 	// Copy through byte offsets.
 	uint8_t* instanceDataStart = nullptr;
-	m_perInstanceCB.resource->Map(0, nullptr, reinterpret_cast<void**>(&instanceDataStart)) >> CHK_HR;
+	perInstanceCB.resource->Map(0, nullptr, reinterpret_cast<void**>(&instanceDataStart)) >> CHK_HR;
 	constexpr UINT perInstanceSize = DX12Abstractions::CalculateConstantBufferByteSize(sizeof(InstanceConstants));
 
-	for (auto& it : m_renderInstancesByID)
+	for (const auto& it : inputs.renderInstancesByID)
 	{
 		RenderObjectID renderObjectID = it.first;
-		std::vector<RenderInstance>& renderInstances = it.second;
+		const std::vector<RenderInstance>& renderInstances = it.second;
 
-		for (RenderInstance& renderInstance : renderInstances)
+		for (const RenderInstance& renderInstance : renderInstances)
 		{
 			uint8_t* instanceData = instanceDataStart + renderInstance.CBIndex * perInstanceSize;
 			memcpy(instanceData, &renderInstance.instanceData, sizeof(InstanceConstants));
 		}
 	}
 
-	m_perInstanceCB.resource->Unmap(0, nullptr);
+	perInstanceCB.resource->Unmap(0, nullptr);
 }
 
-void DX12Renderer::UpdateGlobalFrameDataBuffer()
+void FrameResource::UpdateGlobalFrameDataBuffer(const FrameResourceUpdateInputs& inputs)
 {
-	GlobalFrameData globalFrameData = {
-		.frameCount = m_frameCount,
-		.accumulatedFrames = m_accumulatedFrames,
-		.time = m_time
-	};
-
-	MapDataToBuffer<GlobalFrameData>(m_globalFrameDataCB, &globalFrameData, sizeof(GlobalFrameData));
+	GlobalFrameData globalFrameData = inputs.globalFrameData;
+	MapDataToBuffer<GlobalFrameData>(globalFrameDataCB, &globalFrameData, sizeof(GlobalFrameData));
 }
 
-void DX12Renderer::UpdateTopLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList)
+void FrameResource::UpdateTopLevelAccelerationStructure(const FrameResourceUpdateInputs& inputs, RenderObjectID objectID)
 {
-	AccelerationStructureBuffers& topAccStruct = m_topAccStructByID[objectID];
-	const D3D12_GPU_VIRTUAL_ADDRESS bottomLevelAddress = m_bottomAccStructByID[objectID].result.resource->GetGPUVirtualAddress();
-	const UINT instanceCount = (UINT)m_renderInstancesByID[objectID].size();
+	AccelerationStructureBuffers& topAccStruct = topAccStructByID[objectID];
+	const D3D12_GPU_VIRTUAL_ADDRESS bottomLevelAddress = inputs.bottomAccStructByID.at(objectID).result.resource->GetGPUVirtualAddress();
+	const UINT instanceCount = (UINT)inputs.renderInstancesByID.at(objectID).size();
 
 	D3D12_RAYTRACING_INSTANCE_DESC* instanceDesc = nullptr;
 	topAccStruct.instanceDesc.resource->Map(0, nullptr, reinterpret_cast<void**>(&instanceDesc)) >> CHK_HR;
 
 	for (UINT i = 0; i < instanceCount; i++)
 	{
-		const RenderInstance& renderInstance = m_renderInstancesByID[objectID][i];
+		const RenderInstance& renderInstance = inputs.renderInstancesByID.at(objectID)[i];
 		instanceDesc->InstanceID = i;
 		instanceDesc->InstanceContributionToHitGroupIndex = 0;
 		instanceDesc->Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
@@ -1895,36 +1950,29 @@ void DX12Renderer::UpdateTopLevelAccelerationStructure(RenderObjectID objectID, 
 	}
 
 	topAccStruct.instanceDesc.resource->Unmap(0, nullptr);
-
-	// TODO: Make this input shared between the initial creation and now.
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
-	inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-	inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
-	inputs.NumDescs = instanceCount;
-	inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-	
-	// Create the TLAS
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC asDesc = {};
-	asDesc.Inputs = inputs;
-	asDesc.Inputs.InstanceDescs = topAccStruct.instanceDesc.resource->GetGPUVirtualAddress();
-	asDesc.DestAccelerationStructureData = topAccStruct.result.resource->GetGPUVirtualAddress();
-	asDesc.ScratchAccelerationStructureData = topAccStruct.scratch.resource->GetGPUVirtualAddress();
-
-	commandList->BuildRaytracingAccelerationStructure(&asDesc, 0, nullptr);
-
-	// UAV barrier needed before using the acceleration structures in a raytracing operation
-	CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(topAccStruct.result.Get());
-	commandList->ResourceBarrier(1, &uavBarrier);
 }
 
 
+
+void FrameResource::Init()
+{
+	for (UINT i = 0; i < CommandListIdentifier::NumCommandLists; i++)
+	{
+		commandAllocators[i]->Reset() >> CHK_HR;
+		commandLists[i]->Reset(commandAllocators[i].Get(), nullptr) >> CHK_HR;
+	}
+}
+
+UINT FrameResource::GetFrameIndex() const
+{
+	return m_frameIndex;
+}
 
 // Macro for reducing code duplication in render pass registration.
 // What this macro does is adds it to the render pass map and also registers it for the sync handler.
 #define CaseRegisterRenderPass(renderpasstype, renderclass) \
 case renderpasstype: \
 	m_renderPasses[renderpasstype] = std::make_unique<renderclass>(m_device.Get(), m_rasterRootSignature); \
-	m_syncHandler.AddUniquePassSync(renderpasstype); \
 	break
 
 void DX12Renderer::RegisterRenderPass(const RenderPassType renderPassType)
@@ -1953,12 +2001,12 @@ void DX12Renderer::RegisterRenderPass(const RenderPassType renderPassType)
 
 void DX12Renderer::ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList)
 {
-	for (UINT i = 0; i < GBufferCount; i++)
+	for (UINT i = 0; i < GBufferIDCount; i++)
 	{
 		// Get RTV handle for GBuffer.
 		const CD3DX12_CPU_DESCRIPTOR_HANDLE gBufferRTVHandle(
-			m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
-			RTVOffsets::RTVOffsetGBuffers + i,
+			m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
+			GlobalDescriptors::GetDescriptorOffset(RTVGBuffers) + i,
 			m_rtvDescriptorSize
 		);
 
@@ -2191,6 +2239,11 @@ ID3D12CommandQueue* CommandQueueHandler::Get() const
 	return commandQueue.Get();
 }
 
+UINT64 CommandQueueHandler::GetCompletedFenceValue()
+{
+	return m_fence->GetCompletedValue();
+}
+
 void CommandQueueHandler::ResetAllocator()
 {
 	commandAllocator->Reset() >> CHK_HR;
@@ -2201,19 +2254,27 @@ void CommandQueueHandler::ResetCommandList(ComPtr<ID3D12GraphicsCommandList1> co
 	commandList->Reset(commandAllocator.Get(), nullptr) >> CHK_HR;
 }
 
-void CommandQueueHandler::Signal()
+UINT64 CommandQueueHandler::Signal()
 {
 	commandQueue->Signal(m_fence.Get(), ++m_fenceValue) >> CHK_HR;
+
+	return m_fenceValue;
 }
 
-void CommandQueueHandler::Wait()
+void CommandQueueHandler::WaitForLatestSignal()
 {
-	// If the latest completed value is already at the fence value or larger,
+	// Wait for the latest signal to complete.
+	WaitForFence(m_fenceValue);
+}
+
+void CommandQueueHandler::WaitForFence(UINT64 fenceValue)
+{
+	// If the value is already at the fence value or larger,
 	// there is no need to set and wait for any event as it would pass immediately.
-	if (m_fence->GetCompletedValue() < m_fenceValue)
+	if (GetCompletedFenceValue() < fenceValue)
 	{
 		m_fence->SetEventOnCompletion(m_fenceValue, m_eventHandle) >> CHK_HR;
-		if(WaitForSingleObject(m_eventHandle, CommandQueueHandler::MaxWaitTimeMS) != WAIT_OBJECT_0)
+		if (WaitForSingleObject(m_eventHandle, CommandQueueHandler::MaxWaitTimeMS) != WAIT_OBJECT_0)
 		{
 			throw std::runtime_error("ERROR: Fence wait timed out.");
 		}
@@ -2223,7 +2284,7 @@ void CommandQueueHandler::Wait()
 void CommandQueueHandler::SignalAndWait()
 {
 	Signal();
-	Wait();
+	WaitForLatestSignal();
 }
 
 void CommandQueueHandler::ExecuteCommandLists(DX12Abstractions::CommandListVector& commandLists, UINT count /*= 0*/, const UINT offset /*= 0*/)

@@ -30,8 +30,6 @@ namespace DX12Abstractions
 
 	void GPUResource::TransitionTo(D3D12_RESOURCE_STATES newState, ComPtr<ID3D12GraphicsCommandList> commandList)
 	{  
-		// TODO: Maybe this should be made atomic? Or maybe this structure is just not fit for multithreaded use.
-
 		if (newState == currentState) {
 			return;
 		}

@@ -22,6 +22,11 @@ constexpr LPCWSTR RayGenShaderName = L"raygen";
 constexpr LPCWSTR AnyHitShaderName = L"anyhit";
 constexpr LPCWSTR HitGroupName = L"HitGroup";
  
+typedef std::unordered_map<RenderObjectID, DX12Abstractions::AccelerationStructureBuffers> AccelerationStructureMap;
+typedef std::unordered_map<RenderObjectID, std::vector<RenderInstance>> RenderInstanceMap;
+typedef std::unordered_map<RenderPassType, std::unique_ptr<DX12RenderPass>> RenderPassMap;
+
+struct FrameResource; // Forward declaration.
 
 class CommandQueueHandler
 {
@@ -44,14 +49,16 @@ public:
 	ComPtr<ID3D12GraphicsCommandList4> CreateCommandList(ComPtr<ID3D12Device5> device, bool autoReset = true, D3D12_COMMAND_LIST_FLAGS flags = D3D12_COMMAND_LIST_FLAG_NONE);
 
 	ID3D12CommandQueue* Get() const;
+	UINT64 GetCompletedFenceValue();
 
 	void ResetAllocator();
 	// Assumes that the command list used is a command list previously created by this class.
 	void ResetCommandList(ComPtr<ID3D12GraphicsCommandList1> commandList);
 
-	void Signal();
+	UINT64 Signal();
 	// If nullptr is passed, the function will wait indefinitely.
-	void Wait();
+	void WaitForLatestSignal();
+	void WaitForFence(UINT64 fenceValue);
 	// If nullptr is passed, the function will wait indefinitely.
 	void SignalAndWait();
 
@@ -77,8 +84,6 @@ public:
 	void Update();
 	void Render();
 
-	
-
 private:
 
 	DX12Renderer(UINT width, UINT height, HWND windowHandle);
@@ -90,17 +95,18 @@ private:
 
 	void InitPipeline();
 	void CreateDeviceAndSwapChain();
+	void CreateAccumulationTexture();
+	void CreateBackBuffers();
+	void CreateDepthBuffer();
 	void CreateGBuffers();
 	void CreateMiddleTexture();
-	void CreateAccumulationTexture();
+
 	void CreateRTVHeap();
-	void CreateRTVs();
-	void CreateDepthBuffer();
 	void CreateDSVHeap();
+	void CreateCBVSRVUAVHeapGlobal();
+
+	void CreateRTVs();
 	void CreateDSV();
-	void CreateConstantBuffers();
-	void CreateCBVSRVUAVHeap();
-	void CreateCBVs();
 	void CreateSRVs();
 	void CreateUAVs();
 
@@ -115,24 +121,17 @@ private:
 	void CreateAccelerationStructures();
 	void CreateBottomLevelASs(ComPtr<ID3D12GraphicsCommandList4> commandList);
 	void CreateBottomLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList);
-	void CreateTopLevelASs(ComPtr<ID3D12GraphicsCommandList4> commandList);
-	void CreateTopLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList);
 	void CreateRaytracingPipelineState();
 	void CreateRayGenLocalRootSignature(ComPtr<ID3D12RootSignature>& rootSig);
 	void CreateHitGroupLocalRootSignature(ComPtr<ID3D12RootSignature>& rootSig);
 	void CreateMissLocalRootSignature(ComPtr<ID3D12RootSignature>& rootSig);
 	void CreateGlobalRootSignature(ComPtr<ID3D12RootSignature>& rootSig);
-	void CreateShaderTables();
-	void CreateTopLevelASDescriptors();
-	void CreateTopLevelASDescriptor(RenderObjectID objectID);
+
+	void InitFrameResources();
 
 	void SerializeAndCreateRootSig(CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc, ComPtr<ID3D12RootSignature>& rootSig);
 
 	void UpdateCamera();
-
-	void UpdateInstanceConstantBuffers();
-	void UpdateGlobalFrameDataBuffer();
-	void UpdateTopLevelAccelerationStructure(RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList);
 
 	void ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList);
 	void TransitionGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList, D3D12_RESOURCE_STATES newResourceState);
@@ -141,10 +140,6 @@ private:
 
 	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<VertexIndex>* indices, D3D12_PRIMITIVE_TOPOLOGY topology);
 	RenderObject CreateRenderObjectFromOBJ(const std::string& objPath, D3D12_PRIMITIVE_TOPOLOGY topology);
-
-	CD3DX12_RESOURCE_DESC CreateBackbufferResourceDesc() const;
-	D3D12_SHADER_RESOURCE_VIEW_DESC CreateBackbufferSRVDesc() const;
-	D3D12_UNORDERED_ACCESS_VIEW_DESC CreateBackbufferUAVDesc() const;
 
 private:
 
@@ -157,46 +152,39 @@ private:
 	CD3DX12_VIEWPORT m_viewport;
 	ComPtr<IDXGISwapChain3> m_swapChain;
 	ComPtr<ID3D12Device5> m_device;
+
+	// Descriptor heap for pointing at resources that are global or shared between frames.
+	ComPtr<ID3D12DescriptorHeap> m_rtvHeapGlobal;
+	UINT m_rtvDescriptorSize;
+	ComPtr<ID3D12DescriptorHeap> m_dsvHeapGlobal;
+	UINT m_dsvDescriptorSize;
+	ComPtr<ID3D12DescriptorHeap> m_cbvSrvUavHeapGlobal;
+	UINT m_cbvSrvUavDescriptorSize;
 	
 	// Command queues that are to be used by the main thread.
 	std::unique_ptr<CommandQueueHandler> m_directCommandQueue;
 	std::unique_ptr<CommandQueueHandler> m_computeCommandQueue;
 	std::unique_ptr<CommandQueueHandler> m_copyCommandQueue;
 
-	ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
-	UINT m_rtvDescriptorSize;
-
-	std::array<DX12Abstractions::GPUResource, GBufferCount> m_gBuffers;
-	std::array<DX12Abstractions::GPUResource, BufferCount> m_backBuffers;
-	DX12Abstractions::GPUResource m_middleTexture;
+	std::array<DX12Abstractions::GPUResource, BackBufferCount> m_backBuffers;
 	DX12Abstractions::GPUResource m_accumulationTexture;
-
-	ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
+	std::array<DX12Abstractions::GPUResource, GBufferIDCount> m_gBuffers;
+	DX12Abstractions::GPUResource m_middleTexture;
 	ComPtr<ID3D12Resource> m_depthBuffer;
 
-	ComPtr<ID3D12DescriptorHeap> m_cbvSrvUavHeap;
-	UINT m_cbvSrvUavDescriptorSize;
-	GPUResource m_perInstanceCB;
-	GPUResource m_globalFrameDataCB;
-
-	std::unordered_map<RenderPassType, std::unique_ptr<DX12RenderPass>> m_renderPasses;
+	RenderPassMap m_renderPasses;
 	ComPtr<ID3D12RootSignature> m_rasterRootSignature;
 
 	ComPtr<ID3D12RootSignature> m_RTGlobalRootSignature;
 	ComPtr<ID3D12StateObject> m_RTPipelineState;
 
-	// Synchronization objects.
-	DX12SyncHandler m_syncHandler;
-
 	std::unordered_map<RenderObjectID, RenderObject> m_renderObjectsByID;
-	std::unordered_map<RenderObjectID, std::vector<RenderInstance>> m_renderInstancesByID;
+	RenderInstanceMap m_renderInstancesByID;
 
-	std::unordered_map<RenderObjectID, DX12Abstractions::AccelerationStructureBuffers> m_bottomAccStructByID;
-	std::unordered_map<RenderObjectID, DX12Abstractions::AccelerationStructureBuffers> m_topAccStructByID;
+	AccelerationStructureMap m_bottomAccStructByID;
 
-	DX12Abstractions::ShaderTableData m_rayGenShaderTable;
-	DX12Abstractions::ShaderTableData m_hitGroupShaderTable;
-	DX12Abstractions::ShaderTableData m_missShaderTable;
+	std::array<std::unique_ptr<FrameResource>, BackBufferCount> m_frameResources;
+	FrameResource* m_currentFrameResource;
 
 	Camera* m_activeCamera;
 	std::vector<Camera> m_cameras;
@@ -205,6 +193,79 @@ private:
 	UINT m_accumulatedFrames;
 	float m_time;
 
-
 	static DX12Renderer* s_instance;
+};
+
+struct FrameResource
+{
+	struct FrameResourceInputs
+	{
+		ComPtr<ID3D12Device5> device;
+		CD3DX12_VIEWPORT viewPort;
+		ComPtr<ID3D12DescriptorHeap> dsvHeap;
+		ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeapGlobal;
+		UINT cbvSrvUavDescriptorSize;
+		ComPtr<ID3D12DescriptorHeap> rtvHeap;
+		ComPtr<ID3D12StateObject> rtPipelineStateObject;
+	};
+
+	struct FrameResourceUpdateInputs
+	{
+		const Camera* camera;
+		const RenderInstanceMap& renderInstancesByID;
+		const AccelerationStructureMap& bottomAccStructByID;
+		GlobalFrameData globalFrameData;
+	};
+
+	FrameResource(UINT frameIndex, ComPtr<ID3D12Resource> backBuffer, FrameResourceInputs inputs);
+	~FrameResource() = default;
+
+	// Resets allocators and command lists.
+	void Init();
+	UINT GetFrameIndex() const;
+
+public:
+	void CreateCommandResources(ComPtr<ID3D12Device5> device);
+
+private:
+	
+	void CreateFrameCBVs(ComPtr<ID3D12Device5> device, ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeap, UINT cbvSrvUavDescriptorSize);
+	void CreateConstantBuffers(ComPtr<ID3D12Device5> device);
+
+	void CreateTopLevelASs(ComPtr<ID3D12Device5> device);
+	void CreateTopLevelAS(ComPtr<ID3D12Device5> device, RenderObjectID renderObjectID);
+	void CreateTopLevelASDescriptors(ComPtr<ID3D12Device5> device, ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeap, UINT cbvSrvUavDescriptorSize);
+	void CreateTopLevelASDescriptor(ComPtr<ID3D12Device5> device, RenderObjectID objectID, ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeap, UINT cbvSrvUavDescriptorSize);
+	void CreateShaderTables(FrameResourceInputs inputs);
+
+public:
+	void UpdateFrameResources(const FrameResourceUpdateInputs inputs);
+
+private: 
+	void UpdateInstanceConstantBuffers(const FrameResourceUpdateInputs& inputs);
+	void UpdateGlobalFrameDataBuffer(const FrameResourceUpdateInputs& inputs);
+	void UpdateTopLevelAccelerationStructure(const FrameResourceUpdateInputs& inputs, RenderObjectID objectID);
+	
+public:
+	DX12SyncHandler syncHandler;
+
+	GPUResource perInstanceCB; 
+	GPUResource globalFrameDataCB;
+
+	AccelerationStructureMap topAccStructByID;
+
+	DX12Abstractions::ShaderTableData rayGenShaderTable;
+	DX12Abstractions::ShaderTableData hitGroupShaderTable;
+	DX12Abstractions::ShaderTableData missShaderTable;
+
+	ComPtr<ID3D12CommandAllocator> generalCommandAllocator;
+	ComPtr<ID3D12GraphicsCommandList4> generalCommandList;
+
+	std::array<ComPtr<ID3D12CommandAllocator>, CommandListIdentifier::NumCommandLists> commandAllocators;
+	std::array<ComPtr<ID3D12GraphicsCommandList4>, CommandListIdentifier::NumCommandLists> commandLists;
+
+	UINT64 fenceValue;
+
+private:
+	UINT m_frameIndex;
 };

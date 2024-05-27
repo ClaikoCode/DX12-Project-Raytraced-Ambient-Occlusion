@@ -5,6 +5,7 @@
 #include "DirectXIncludes.h"
 #include "GPUResource.h"
 #include "AppDefines.h"
+#include "DXRAbstractions.h"
 
 using Microsoft::WRL::ComPtr;
 using DX12Abstractions::GPUResource;
@@ -54,4 +55,10 @@ struct RenderPackage
 {
 	RenderObject* renderObject;
 	std::vector<RenderInstance>* renderInstances;
+};
+
+struct RayTracingRenderPackage
+{
+	DX12Abstractions::AccelerationStructureBuffers* topLevelASBuffers;
+	UINT instanceCount;
 };
