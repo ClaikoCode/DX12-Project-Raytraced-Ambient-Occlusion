@@ -2,6 +2,7 @@
 
 #include "DirectXIncludes.h"
 #include "DXRAbstractions.h"
+#include "RenderObject.h"
 #include <variant>
 
 struct CommonRenderPassArgs
@@ -67,6 +68,8 @@ struct RaytracedAORenderPassArgs
 	UINT frameCount;
 	UINT screenWidth;
 	UINT screenHeight;
+
+	std::vector<RayTracingRenderPackage> renderPackages;
 };
 
 struct AccumulationRenderPassArgs

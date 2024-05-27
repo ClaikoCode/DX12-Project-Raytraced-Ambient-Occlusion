@@ -508,6 +508,35 @@ void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPacka
 		0
 	);
 
+	std::vector<CD3DX12_RESOURCE_BARRIER> barriers = {};
+	for (const RayTracingRenderPackage& rtRenderPackage : args.renderPackages)
+	{
+		// TODO: Make this input shared between the initial creation and now.
+		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS rtInputs = {};
+		rtInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+		rtInputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+		rtInputs.NumDescs = rtRenderPackage.instanceCount;
+		rtInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+
+		DX12Abstractions::AccelerationStructureBuffers* topAccStruct = rtRenderPackage.topLevelASBuffers;
+
+		// Create the TLAS
+		D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC asDesc = {};
+		asDesc.Inputs = rtInputs;
+		asDesc.Inputs.InstanceDescs = topAccStruct->instanceDesc.resource->GetGPUVirtualAddress();
+		asDesc.DestAccelerationStructureData = topAccStruct->result.resource->GetGPUVirtualAddress();
+		asDesc.ScratchAccelerationStructureData = topAccStruct->scratch.resource->GetGPUVirtualAddress();
+
+		commandList->BuildRaytracingAccelerationStructure(&asDesc, 0, nullptr);
+
+		// UAV barrier needed before using the acceleration structures in a ray tracing operation
+		CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(topAccStruct->result.Get());
+		barriers.push_back(uavBarrier);
+	}
+
+	// Put UAV barriers for all the acceleration structures
+	commandList->ResourceBarrier((UINT)barriers.size(), barriers.data());
+
 	// Dispatch
 	commandList->SetPipelineState1(args.stateObject.Get());
 	commandList->DispatchRays(&raytraceDesc);

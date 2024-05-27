@@ -152,15 +152,12 @@ void DX12Renderer::Update()
 		.globalFrameData = globalFrameData
 	};
 
-	//UINT currentFrameIndex = m_currentFrameResource->GetFrameIndex();
-	//UINT nextFrameIndex = (currentFrameIndex + 1) % BackBufferCount;
 	m_currentFrameResource->UpdateFrameResources(inputs);
 }
 
 void DX12Renderer::Render()
 {
 	UINT currentFrameIndex = m_currentFrameResource->GetFrameIndex();
-	UINT currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
 
 	// Store command lists for each render pass.
 	CommandListVector commandLists;
@@ -170,12 +167,12 @@ void DX12Renderer::Render()
 	ComPtr<ID3D12GraphicsCommandList4> postCommandList = m_currentFrameResource->commandLists[PostCommandList];
 
 	// Fetch the current back buffer that we want to render to.
-	GPUResource& currentBackBuffer = m_backBuffers[currentBackBufferIndex];
+	GPUResource& currentBackBuffer = m_backBuffers[currentFrameIndex];
 
 	// Get RTV handle for the current back buffer.
 	const CD3DX12_CPU_DESCRIPTOR_HANDLE bbRTV (
 		m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
-		FRAME_DESCRIPTOR_OFFSET(RTVBackBuffers, 0) + currentBackBufferIndex,
+		FRAME_DESCRIPTOR_OFFSET(RTVBackBuffers, 0) + currentFrameIndex,
 		m_rtvDescriptorSize
 	);
 
@@ -325,7 +322,7 @@ void DX12Renderer::Render()
 					// Get RTV handle for the first GBuffer.
 					const CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle(
 						m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
-						RTVGBuffersOffset,
+						FRAME_DESCRIPTOR_OFFSET(RTVGBuffers, currentFrameIndex),
 						m_rtvDescriptorSize
 					);
 
@@ -482,6 +479,9 @@ void DX12Renderer::Render()
 
 	// Increment frame count.
 	m_frameCount++;
+
+	UINT nextFrameIndex = (currentFrameIndex + 1) % BackBufferCount;
+	m_currentFrameResource = m_frameResources[nextFrameIndex].get();
 }
 
 DX12Renderer::~DX12Renderer()
@@ -1831,10 +1831,7 @@ void FrameResource::UpdateFrameResources(const FrameResourceUpdateInputs inputs)
 {
 	UpdateInstanceConstantBuffers(inputs);
 	UpdateGlobalFrameDataBuffer(inputs);
-
-	generalCommandList->Reset(generalCommandAllocator.Get(), nullptr);
-	UpdateTopLevelAccelerationStructure(inputs, RenderObjectID::Cube, generalCommandList);
-	generalCommandList->Close();
+	UpdateTopLevelAccelerationStructure(inputs, RenderObjectID::Cube);
 }
 
 void FrameResource::CreateTopLevelASDescriptors(ComPtr<ID3D12Device5> device, ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeap, UINT cbvSrvUavDescriptorSize)
@@ -1936,7 +1933,7 @@ void FrameResource::UpdateGlobalFrameDataBuffer(const FrameResourceUpdateInputs&
 	MapDataToBuffer<GlobalFrameData>(globalFrameDataCB, &globalFrameData, sizeof(GlobalFrameData));
 }
 
-void FrameResource::UpdateTopLevelAccelerationStructure(const FrameResourceUpdateInputs& inputs, RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList)
+void FrameResource::UpdateTopLevelAccelerationStructure(const FrameResourceUpdateInputs& inputs, RenderObjectID objectID)
 {
 	AccelerationStructureBuffers& topAccStruct = topAccStructByID[objectID];
 	const D3D12_GPU_VIRTUAL_ADDRESS bottomLevelAddress = inputs.bottomAccStructByID.at(objectID).result.resource->GetGPUVirtualAddress();
@@ -1963,26 +1960,6 @@ void FrameResource::UpdateTopLevelAccelerationStructure(const FrameResourceUpdat
 	}
 
 	topAccStruct.instanceDesc.resource->Unmap(0, nullptr);
-
-	// TODO: Make this input shared between the initial creation and now.
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS rtInputs = {};
-	rtInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-	rtInputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
-	rtInputs.NumDescs = instanceCount;
-	rtInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-	
-	// Create the TLAS
-	D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC asDesc = {};
-	asDesc.Inputs = rtInputs;
-	asDesc.Inputs.InstanceDescs = topAccStruct.instanceDesc.resource->GetGPUVirtualAddress();
-	asDesc.DestAccelerationStructureData = topAccStruct.result.resource->GetGPUVirtualAddress();
-	asDesc.ScratchAccelerationStructureData = topAccStruct.scratch.resource->GetGPUVirtualAddress();
-
-	commandList->BuildRaytracingAccelerationStructure(&asDesc, 0, nullptr);
-
-	// UAV barrier needed before using the acceleration structures in a ray tracing operation
-	CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(topAccStruct.result.Get());
-	commandList->ResourceBarrier(1, &uavBarrier);
 }
 
 

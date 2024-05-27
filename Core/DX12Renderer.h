@@ -242,7 +242,7 @@ public:
 private: 
 	void UpdateInstanceConstantBuffers(const FrameResourceUpdateInputs& inputs);
 	void UpdateGlobalFrameDataBuffer(const FrameResourceUpdateInputs& inputs);
-	void UpdateTopLevelAccelerationStructure(const FrameResourceUpdateInputs& inputs, RenderObjectID objectID, ComPtr<ID3D12GraphicsCommandList4> commandList);
+	void UpdateTopLevelAccelerationStructure(const FrameResourceUpdateInputs& inputs, RenderObjectID objectID);
 	
 public:
 	std::array<DX12Abstractions::GPUResource, GBufferIDCount> gBuffers; 
