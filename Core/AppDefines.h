@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <array>
+#include <unordered_map>
 
 #include "DirectXIncludes.h"
 
@@ -71,46 +72,191 @@ constexpr uint32_t MaxCBVSRVUAVDescriptors = (MaxRenderInstances * 2) * BackBuff
 #define FRAME_DESCRIPTOR_OFFSET(BaseName, FrameIndex) (DESCRIPTOR_OFFSET(BaseName) * BackBufferCount + DESCRIPTOR_COUNT(BaseName) * FrameIndex)
 
 
-// The count of different types of descriptors.
-enum CBVSRVUAVCounts : UINT
+
+
+// A enum with all unique global descriptor names.
+enum GlobalDescriptorNames
 {
-	CBVRenderInstanceCount				= MaxRenderInstances,
-	CBVGlobalFrameDataCount				= 1,
-	SRVGBuffersCount					= GBufferIDCount,
-	SRVMiddleTextureCount				= 1,
-	SRVAccumulationTextureCount			= 1,
-	SRVTLASCount						= 1,
-	UAVMiddleTextureCount				= 1,
-	UAVAccumulationTextureCount			= 1
+	SRVGBuffers,
+	SRVMiddleTexture,
+	UAVMiddleTexture,
+	UAVAccumulationTexture,
+	RTVGBuffers,
+	RTVMiddleTexture,
+	RTVBackBuffers,
+	DSVScene
 };
 
-// Offsets for descriptors in the descriptor heap. The pattern is always adding the value before and adding its equivalent count.
-// So its always: [DescriptorType]Offset[SpecificName] + [DescriptorType]Count[SpecificName].
-
-enum CBVSRVUAVOffsets : UINT {
-	CBVRenderInstanceOffset			= 0,
-	CBVGlobalFrameDataOffset		= CBVRenderInstanceOffset		+ CBVRenderInstanceCount,
-	SRVGBuffersOffset				= CBVGlobalFrameDataOffset		+ CBVGlobalFrameDataCount,
-	SRVMiddleTextureOffset			= SRVGBuffersOffset				+ SRVGBuffersCount,
-	SRVAccumulationTextureOffset	= SRVMiddleTextureOffset		+ SRVMiddleTextureCount,
-	SRVTLASOffset					= SRVAccumulationTextureOffset	+ SRVAccumulationTextureCount,
-	UAVMiddleTextureOffset			= SRVTLASOffset					+ SRVTLASCount,
-	UAVAccumulationTextureOffset	= UAVMiddleTextureOffset		+ UAVMiddleTextureCount
-};
-
-enum RTVCounts : UINT
+namespace GlobalDescriptors
 {
-	RTVGBuffersCount		= GBufferIDCount,
-	RTVMiddleTextureCount	= 1,
-	RTVBackBuffersCount		= BackBufferCount
+	constexpr uint32_t MaxGlobalCBVSRVUAVDescriptors = 128u;
+	constexpr uint32_t MaxGlobalRTVDescriptors = 32u;
+	constexpr uint32_t MaxGlobalDSVDescriptors = 8u;
+
+	enum CBVSRVUAVCounts : uint32_t
+	{
+		SRVGBuffersCount			= GBufferIDCount,
+		SRVMiddleTextureCount		= 1,
+		UAVMiddleTextureCount		= 1,
+		UAVAccumulationTextureCount = 1
+	};
+
+	enum CBVSRVUAVOffsets : uint32_t
+	{
+		SRVGBuffersOffset				= 0,
+		SRVMiddleTextureOffset			= SRVGBuffersOffset				+ SRVGBuffersCount,
+		UAVMiddleTextureOffset			= SRVMiddleTextureOffset		+ SRVMiddleTextureCount,
+		UAVAccumulationTextureOffset	= UAVMiddleTextureOffset		+ UAVMiddleTextureCount
+	};
+
+	enum RTVCounts : UINT
+	{
+		RTVGBuffersCount		= GBufferIDCount,
+		RTVMiddleTextureCount	= 1,
+		RTVBackBuffersCount		= BackBufferCount
+	};
+
+	enum RTVOffsets : UINT
+	{
+		RTVGBuffersOffset		= 0,
+		RTVMiddleTextureOffset	= RTVGBuffersOffset			+ RTVGBuffersCount,
+		RTVBackBuffersOffset	= RTVMiddleTextureOffset	+ RTVMiddleTextureCount
+	};
+
+	enum DSVCounts : UINT
+	{
+		DSVSceneCount = 1
+	};
+
+	enum DSVOffsets : UINT
+	{
+		DSVSceneOffset = 0
+	};
+
+	// A map that maps the descriptor names to the count of descriptors.
+	static const std::unordered_map<GlobalDescriptorNames, uint32_t> DescriptorCountMap = {
+
+		// SRVs
+		{ SRVGBuffers,				SRVGBuffersCount			},
+		{ SRVMiddleTexture,			SRVMiddleTextureCount		},
+
+		// UAVs
+		{ UAVMiddleTexture,			UAVMiddleTextureCount		},
+		{ UAVAccumulationTexture,	UAVAccumulationTextureCount	},
+
+		// RTVs
+		{ RTVGBuffers,				RTVGBuffersCount			},
+		{ RTVMiddleTexture,			RTVMiddleTextureCount		},
+		{ RTVBackBuffers,			RTVBackBuffersCount			},
+
+		// DSVs
+		{ DSVScene,					DSVSceneCount				}
+	};
+
+	// A map that maps the descriptor names to the offset of the descriptors.
+	static const std::unordered_map<GlobalDescriptorNames, uint32_t> DescriptorOffsetMap = {
+
+		// SRVs
+		{ SRVGBuffers,				SRVGBuffersOffset				},
+		{ SRVMiddleTexture,			SRVMiddleTextureOffset			},
+		
+		// UAVs
+		{ UAVMiddleTexture,			UAVMiddleTextureOffset			},
+		{ UAVAccumulationTexture,	UAVAccumulationTextureOffset	},
+
+		// RTVs
+		{ RTVGBuffers,				RTVGBuffersOffset				},
+		{ RTVMiddleTexture,			RTVMiddleTextureOffset			},
+		{ RTVBackBuffers,			RTVBackBuffersOffset			},
+
+		// DSVs
+		{ DSVScene,					DSVSceneOffset					}
+	};
+
+	static uint32_t GetDescriptorCount(GlobalDescriptorNames descriptorName)
+	{
+		return DescriptorCountMap.at(descriptorName);
+	}
+
+	static uint32_t GetDescriptorOffset(GlobalDescriptorNames descriptorName)
+	{
+		return DescriptorOffsetMap.at(descriptorName);
+	}
+
+	static uint32_t GetDescriptorRelativeOffset(GlobalDescriptorNames from, GlobalDescriptorNames to)
+	{
+		int fromOffset = (int)GetDescriptorOffset(from);
+		int toOffset = (int)GetDescriptorOffset(to);
+
+		int offset = toOffset - fromOffset;
+
+		return (uint32_t)abs(offset);
+	}
+}
+
+enum FrameDescriptorNames
+{
+	CBVRenderInstance,
+	CBVFrameData,
+	SRVTopLevelAS
 };
 
-enum RTVOffsets : UINT
+namespace FrameDescriptors
 {
-	RTVGBuffersOffset		= 0,
-	RTVMiddleTextureOffset	= RTVGBuffersOffset + RTVGBuffersCount,
-	RTVBackBuffersOffset	= RTVMiddleTextureOffset + RTVMiddleTextureCount // Back buffers should always come last for simplicity.
-};
+	constexpr uint32_t MaxFrameCBVSRVUAVDescriptors = 256u;
+
+	enum CBVSRVUAVCounts : uint32_t
+	{
+		CBVRenderInstanceCount	= MaxRenderInstances,
+		CBVFrameDataCount		= 1,
+		SRVTLASCount			= 1,
+	};
+
+	enum CBVSRVUAVOffsets : uint32_t
+	{
+		CBVRenderInstanceOffset = 0,
+		CBVFrameDataOffset = CBVRenderInstanceOffset + CBVRenderInstanceCount,
+		SRVTLASOffset = CBVFrameDataOffset + CBVFrameDataCount
+	};
+
+
+	// A map that maps the descriptor names to the count of descriptors.
+	static const std::unordered_map<FrameDescriptorNames, uint32_t> DescriptorCountMap = {
+
+		// CBVs
+		{ CBVRenderInstance,	CBVRenderInstanceCount	},
+		{ CBVFrameData,			CBVFrameDataCount		},
+
+		// SRVs
+		{ SRVTopLevelAS,				SRVTLASCount	}
+	};
+
+
+	// A map that maps the descriptor names to the offset of the descriptors.
+	static const std::unordered_map<FrameDescriptorNames, uint32_t> DescriptorOffsetMap = {
+
+		// CBVs
+		{ CBVRenderInstance,	CBVRenderInstanceOffset	},
+		{ CBVFrameData,			CBVFrameDataOffset		},
+
+		// SRVs
+		{ SRVTopLevelAS,				SRVTLASOffset			}
+	};
+
+	static uint32_t GetDescriptorCount(FrameDescriptorNames descriptorName)
+	{
+		return DescriptorCountMap.at(descriptorName);
+	}
+
+	static uint32_t GetDescriptorOffsetCBVSRVUAV(FrameDescriptorNames descriptorName, UINT frameIndex)
+	{
+		UINT internalOffset = 
+			GlobalDescriptors::MaxGlobalCBVSRVUAVDescriptors + 
+			FrameDescriptors::MaxFrameCBVSRVUAVDescriptors * frameIndex;
+
+		return DescriptorOffsetMap.at(descriptorName) + internalOffset;
+	}
+}
 
 struct InstanceConstants
 {
