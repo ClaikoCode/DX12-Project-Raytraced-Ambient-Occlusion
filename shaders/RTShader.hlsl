@@ -22,8 +22,11 @@ ConstantBuffer<GlobalData> globalData : register(b0);
 #define AO_IS_ILLUMINATED_VAL 1.0f
 #define AO_MIN_T 0.0001f
 #define AO_RADIUS 100000.0f
+#define NUM_SAMPLES 128u
 
-
+// The four functions below (initRand, nextRand, and getPerpendicularVector, getCosHemisphereSample) were taken from the codebase 
+// of a tutorial on simple raytracing techniques.
+// The tutorial can be found here: https://cwyman.org/code/dxrTutors/dxr_tutors.md.html
 
 // Generates a seed for a random number generator from 2 inputs plus a backoff
 uint initRand(uint val0, uint val1, uint backoff = 16)
@@ -48,7 +51,6 @@ float nextRand(inout uint s)
 }
 
 // Utility function to get a vector perpendicular to an input vector 
-//    (from "Efficient Construction of Perpendicular Vectors Without Branching")
 float3 getPerpendicularVector(float3 u)
 {
     float3 a = abs(u);
@@ -91,15 +93,22 @@ void raygen()
     float aoVal = 1.0;
     if (worldPos.w != 0.0f)
 	{
-        float3 worldDir = getCosHemisphereSample(randSeed, worldNormal);
+        float accumulatedAOVal = 0.0f;
+        for (uint i = 0; i < NUM_SAMPLES; i++)
+        {
+            float3 worldDir = getCosHemisphereSample(randSeed, worldNormal);
 		
-        RayPayload rayPayload = { 0.0f };
-        RayDesc rayAO = { worldPos.xyz + mul(worldNormal, 0.0000001f), AO_MIN_T, worldDir, AO_RADIUS };
-        uint rayFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
+            RayPayload rayPayload = { 0.0f };
+            RayDesc rayAO = { worldPos.xyz + mul(worldNormal, 0.0000001f), AO_MIN_T, worldDir, AO_RADIUS };
+            uint rayFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER;
 
-        TraceRay(gRtScene, rayFlags, 0xFF, 0, 1, 0, rayAO, rayPayload);
+            TraceRay(gRtScene, rayFlags, 0xFF, 0, 1, 0, rayAO, rayPayload);
 
-        aoVal = rayPayload.aoVal;
+            accumulatedAOVal += rayPayload.aoVal;
+        }
+        
+        
+        aoVal = (accumulatedAOVal / (float)NUM_SAMPLES);
     }
     
     gOutput[pixelIndex] = gOutput[pixelIndex] * aoVal;

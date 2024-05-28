@@ -3,12 +3,17 @@
 #include <stdexcept>
 #include <vector>
 
+// For random number generation.
+#include <time.h>
+#include <cstdlib>
+
 #include "GraphicsErrorHandling.h"
 #include "DX12AbstractionUtils.h"
 #include "AppDefines.h"
 #include "tiny_obj_loader.h"
 
 //#define SINGLE_THREAD
+#define TESTING
 
 using namespace DX12Abstractions;
 namespace dx = DirectX;
@@ -20,7 +25,9 @@ static std::vector<RenderPassType> sPassesToRegister = {
 	RenderPassType::AccumulationPass
 };
 
-static std::vector<RenderObjectID> sRTRenderObjectIDs = { RenderObjectID::Cube };
+constexpr UINT InvalidIndex = UINT_MAX;
+
+static std::vector<RenderObjectID> sRTRenderObjectIDs = { RTRenderObjectID };
 
 //static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass };
 static std::vector<RenderPassType> sRenderPassOrder = { DeferredGBufferPass, DeferredLightingPass, RaytracedAOPass, AccumulationPass };
@@ -171,7 +178,7 @@ void DX12Renderer::Render()
 	UINT currentFrameIndex = m_currentFrameResource->GetFrameIndex();
 
 	// Store command lists for each render pass.
-	CommandListVector commandLists;
+	CommandListVector combinedCommandLists;
 
 	m_currentFrameResource->Init();
 	ComPtr<ID3D12GraphicsCommandList4> preCommandList = m_currentFrameResource->commandLists[PreCommandList];
@@ -181,61 +188,22 @@ void DX12Renderer::Render()
 	GPUResource& currentBackBuffer = m_backBuffers[currentFrameIndex];
 
 	// Get RTV handle for the current back buffer.
-	const CD3DX12_CPU_DESCRIPTOR_HANDLE bbRTV(
-		m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
-		GlobalDescriptors::GetDescriptorOffset(RTVBackBuffers) + currentFrameIndex,
-		m_rtvDescriptorSize
-	);
+	const CD3DX12_CPU_DESCRIPTOR_HANDLE bbRTV = GetGlobalRTVHandle(GlobalDescriptorNames::RTVBackBuffers, currentFrameIndex);
 
-	const CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureRTV(
-		m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
-		GlobalDescriptors::GetDescriptorOffset(RTVMiddleTexture),
-		m_rtvDescriptorSize
-	);
+	const CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureRTV = GetGlobalRTVHandle(GlobalDescriptorNames::RTVMiddleTexture);
 
 	// Get DSV handle.
-	CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(m_dsvHeapGlobal->GetCPUDescriptorHandleForHeapStart());
-	dsvHandle.Offset(GlobalDescriptors::GetDescriptorOffset(DSVScene), m_dsvDescriptorSize);
+	CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle = GetGlobalDSVHandle(GlobalDescriptorNames::DSVScene);
 
 	// Pre render pass setup.
 	{
-		// Clear back buffer and prime for rendering.
-		{
-			currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, preCommandList);
-
-			float clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
-			preCommandList->ClearRenderTargetView(bbRTV, clearColor, 0, nullptr);
-		}
-
-		// Clear middle texture.
-		{
-			m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, preCommandList);
-			preCommandList->ClearRenderTargetView(middleTextureRTV, OptimizedClearColor, 0, nullptr);
-		}
-
-		// Setup gbuffers.
-		if (HasRenderPass(sRenderPassOrder, RenderPassType::DeferredGBufferPass))
-		{
-			TransitionGBuffers(preCommandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-			ClearGBuffers(preCommandList);
-		}
-		
-
-		// Clear depth buffer.
-		preCommandList->ClearDepthStencilView(
-			dsvHandle,
-			D3D12_CLEAR_FLAG_DEPTH,
-			1.0f,
-			0,
-			0,
-			nullptr
-		);
+		ClearBuffers(currentBackBuffer, preCommandList, bbRTV, middleTextureRTV, dsvHandle);
 
 		// Close pre-command list.
 		preCommandList->Close();
 
 		// Add command list to list of command lists.
-		commandLists.push_back(preCommandList);
+		combinedCommandLists.push_back(preCommandList);
 	}
 
 	// Initialize all render passes (resetting).
@@ -258,6 +226,7 @@ void DX12Renderer::Render()
 	// Wait for all passes to finish on the CPU.
 	m_syncHandler.WaitEndAll();
 
+	// If the Raytraced AO pass is the last pass, copy the middle texture to the back buffer.
 	if (HasRenderPass(sRenderPassOrder, RaytracedAOPass))
 	{
 		if (sRenderPassOrder.back() == RaytracedAOPass)
@@ -276,12 +245,13 @@ void DX12Renderer::Render()
 	postCommandList->Close() >> CHK_HR;
 
 	// Add all command lists to the main command list.
-	UINT rtCommandListIndex = 0;
+	UINT rtCommandListIndex = InvalidIndex;
 	for (RenderPassType renderPass : sRenderPassOrder)
 	{
+		// Save index of ray tracing pass for usage in compute queue.
 		if (renderPass == RaytracedAOPass)
 		{
-			rtCommandListIndex = (UINT)commandLists.size();
+			rtCommandListIndex = (UINT)combinedCommandLists.size();
 		}
 
 		const auto& renderPassPtr = m_renderPasses[renderPass];
@@ -289,42 +259,80 @@ void DX12Renderer::Render()
 		{
 			if (renderPassPtr->IsEnabled())
 			{
-				commandLists.push_back(renderPassPtr->GetCommandList(context, currentFrameIndex));
+				combinedCommandLists.push_back(renderPassPtr->GetCommandList(context, currentFrameIndex));
 			}
 		}
 	}
 
 	// Add post command list to list of command lists.
-	commandLists.push_back(postCommandList);
+	combinedCommandLists.push_back(postCommandList);
 
-	// Execute all command lists.
-	//{
-	//	ID3D12CommandList* const* commandListsRaw = commandLists[0].GetAddressOf();
-	//	m_directCommandQueue->commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandListsRaw);
-	//}
+	// Check if there actually is a ray tracing pass.
+	if (rtCommandListIndex == InvalidIndex)
+	{
+		m_directCommandQueue->ExecuteCommandLists(combinedCommandLists);
+	}
+	else
+	{
+		// Execute all command lists up to the ray tracing pass.
+		m_directCommandQueue->ExecuteCommandLists(combinedCommandLists, rtCommandListIndex);
 
-	// Execute all command lists up to the raytracing pass.
-	m_directCommandQueue->ExecuteCommandLists(commandLists, rtCommandListIndex);
-	
-	// Make sure the raytracing pass waits for the previous passes to finish as it relies on the output of it.
-	m_computeCommandQueue->GPUWaitForOtherQueue(*m_directCommandQueue);
-	// Execute the raytracing pass.
-	m_computeCommandQueue->ExecuteCommandLists(commandLists, NumContexts, rtCommandListIndex);
+		// Make sure the ray tracing pass waits for the previous passes to finish as it relies on the output of it.
+		m_computeCommandQueue->GPUWaitForOtherQueue(*m_directCommandQueue);
+		// Execute the ray tracing pass.
+		m_computeCommandQueue->ExecuteCommandLists(combinedCommandLists, NumContexts, rtCommandListIndex);
 
-	// Wait yet again for the raytracing pass to finish.
-	m_directCommandQueue->GPUWaitForOtherQueue(*m_computeCommandQueue);
-	UINT finalIndex = (NumContexts + rtCommandListIndex);
-	// Execute final command lists.
-	m_directCommandQueue->ExecuteCommandLists(commandLists, commandLists.size() - finalIndex, finalIndex);
+		// Wait yet again for the ray tracing pass to finish.
+		m_directCommandQueue->GPUWaitForOtherQueue(*m_computeCommandQueue);
+		UINT finalIndex = (NumContexts + rtCommandListIndex);
+		// Execute final command lists.
+		m_directCommandQueue->ExecuteCommandLists(combinedCommandLists, (UINT)combinedCommandLists.size() - finalIndex, finalIndex);
+	}
 
 	// Present
 	m_swapChain->Present(0, 0) >> CHK_HR;
 
+	// Signal end of frame.
 	UINT64 fenceVal = m_directCommandQueue->Signal();
 	m_currentFrameResource->fenceValue = fenceVal; // Save the fence val for this frame.
 
 	// Increment frame count.
 	m_frameCount++;
+}
+
+
+void DX12Renderer::ClearBuffers(GPUResource& currentBackBuffer, ComPtr<ID3D12GraphicsCommandList4> preCommandList, const CD3DX12_CPU_DESCRIPTOR_HANDLE bbRTV, const CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureRTV, CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle)
+{
+	// Clear back buffer and prime for rendering.
+	{
+		currentBackBuffer.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, preCommandList);
+
+		float clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f }; // Specific known clear color for easier debugging.
+		preCommandList->ClearRenderTargetView(bbRTV, clearColor, 0, nullptr);
+	}
+
+	// Clear middle texture.
+	{
+		m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, preCommandList);
+		preCommandList->ClearRenderTargetView(middleTextureRTV, OptimizedClearColor, 0, nullptr);
+	}
+
+	// Setup gbuffers.
+	if (HasRenderPass(sRenderPassOrder, RenderPassType::DeferredGBufferPass))
+	{
+		TransitionGBuffers(preCommandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		ClearGBuffers(preCommandList);
+	}
+
+	// Clear depth buffer.
+	preCommandList->ClearDepthStencilView(
+		dsvHandle,
+		D3D12_CLEAR_FLAG_DEPTH,
+		1.0f,
+		0,
+		0,
+		nullptr
+	);
 }
 
 DX12Renderer::~DX12Renderer()
@@ -363,6 +371,12 @@ DX12Renderer::DX12Renderer(UINT width, UINT height, HWND windowHandle) :
 	m_forceExitThread(false)
 {
 	s_instance = this;
+
+#if defined(TESTING)
+	srand(256); // Specific seed if testing.
+#else
+	srand(time(0));
+#endif
 
 	InitPipeline();
 	InitAssets();
@@ -479,7 +493,7 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 			.Scaling = DXGI_SCALING_STRETCH,
 			.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
 			.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED,
-			.Flags = 0
+			.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING
 		};
 
 		ComPtr<IDXGISwapChain1> swapChainTemp;
@@ -608,7 +622,7 @@ void DX12Renderer::CreateRTVHeap()
 {
 	const D3D12_DESCRIPTOR_HEAP_DESC rtvDescriptorHeapDesc = {
 			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-			.NumDescriptors = MaxRTVDescriptors,
+			.NumDescriptors = GlobalDescriptors::MaxGlobalRTVDescriptors,
 			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
 			.NodeMask = 0
 	};
@@ -913,63 +927,63 @@ void DX12Renderer::InitAssets()
 
 void DX12Renderer::CreateRootSignatures()
 {
-	std::array<CD3DX12_ROOT_PARAMETER, DefaultRootParameterIdx::DefaultRootParameterCount> rootParameters = {};
 	// Default root parameter setup.
-	{
-		// Add a matrix to the root signature where each element is stored as a constant.
-		rootParameters[DefaultRootParameterIdx::MatrixIdx].InitAsConstants(
-			sizeof(dx::XMMATRIX) / 4,
-			RasterShaderRegisters::CBVRegisters::CBMatrixConstants,
-			0,
-			D3D12_SHADER_VISIBILITY_VERTEX
-		);
+	std::array<CD3DX12_ROOT_PARAMETER, DefaultRootParameterIdx::DefaultRootParameterCount> rootParameters = {};
 
-		rootParameters[DefaultRootParameterIdx::CBVGlobalFrameDataIdx].InitAsConstantBufferView(RasterShaderRegisters::CBVRegisters::CBVDescriptorGlobals);
+	// Add a matrix to the root signature where each element is stored as a constant.
+	rootParameters[DefaultRootParameterIdx::MatrixIdx].InitAsConstants(
+		sizeof(dx::XMMATRIX) / 4,
+		RasterShaderRegisters::CBVRegisters::CBMatrixConstants,
+		0,
+		D3D12_SHADER_VISIBILITY_VERTEX
+	);
 
-		// Add descriptor table for instance specific constants.
-		CD3DX12_DESCRIPTOR_RANGE instanceCBVRange;
-		instanceCBVRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, RasterShaderRegisters::CBVRegisters::CBVDescriptorRange);
-		rootParameters[DefaultRootParameterIdx::CBVTableIdx].InitAsDescriptorTable(
-			1, 
-			&instanceCBVRange, 
-			D3D12_SHADER_VISIBILITY_VERTEX
-		);
+	rootParameters[DefaultRootParameterIdx::CBVGlobalFrameDataIdx].InitAsConstantBufferView(RasterShaderRegisters::CBVRegisters::CBVDescriptorGlobals);
 
-		// Add descriptor SRV range for gbuffers.
-		CD3DX12_DESCRIPTOR_RANGE gBufferSRVRange;
-		gBufferSRVRange.Init(
-			D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 
-			GlobalDescriptors::GetDescriptorCount(SRVGBuffers), 
-			RasterShaderRegisters::SRVRegisters::SRVDescriptorRange
-		);
+	// Add descriptor table for instance specific constants.
+	CD3DX12_DESCRIPTOR_RANGE instanceCBVRange;
+	instanceCBVRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, RasterShaderRegisters::CBVRegisters::CBVDescriptorRange);
+	rootParameters[DefaultRootParameterIdx::CBVTableIdx].InitAsDescriptorTable(
+		1, 
+		&instanceCBVRange, 
+		D3D12_SHADER_VISIBILITY_VERTEX
+	);
 
-		// Descriptor range for middle texture SRV.
-		CD3DX12_DESCRIPTOR_RANGE middleTextureSRVRange;
-		middleTextureSRVRange.Init(
-			D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-			GlobalDescriptors::GetDescriptorCount(SRVMiddleTexture),
-			gBufferSRVRange.BaseShaderRegister + gBufferSRVRange.NumDescriptors,
-			0,
-			GlobalDescriptors::GetDescriptorRelativeOffset(SRVGBuffers, SRVMiddleTexture)
-		);
+	// Add descriptor SRV range for gbuffers.
+	CD3DX12_DESCRIPTOR_RANGE gBufferSRVRange;
+	gBufferSRVRange.Init(
+		D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 
+		GlobalDescriptors::GetDescriptorCount(SRVGBuffers), 
+		RasterShaderRegisters::SRVRegisters::SRVDescriptorRange
+	);
 
-		// Descriptor range for accumulation UAV.
-		CD3DX12_DESCRIPTOR_RANGE accumulationUAVRange;
-		accumulationUAVRange.Init(
-			D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
-			GlobalDescriptors::GetDescriptorCount(UAVAccumulationTexture),
-			RasterShaderRegisters::UAVRegisters::UAVDescriptorRange,
-			0,
-			GlobalDescriptors::GetDescriptorRelativeOffset(SRVGBuffers, UAVAccumulationTexture)
-		);
+	// Descriptor range for middle texture SRV.
+	CD3DX12_DESCRIPTOR_RANGE middleTextureSRVRange;
+	middleTextureSRVRange.Init(
+		D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+		GlobalDescriptors::GetDescriptorCount(SRVMiddleTexture),
+		gBufferSRVRange.BaseShaderRegister + gBufferSRVRange.NumDescriptors,
+		0,
+		GlobalDescriptors::GetDescriptorRelativeOffset(SRVGBuffers, SRVMiddleTexture)
+	);
 
-		std::array<CD3DX12_DESCRIPTOR_RANGE, 3> UAVSRVTable = { { gBufferSRVRange, middleTextureSRVRange, accumulationUAVRange } };
-		rootParameters[DefaultRootParameterIdx::UAVSRVTableIdx].InitAsDescriptorTable(
-			(UINT)UAVSRVTable.size(), 
-			UAVSRVTable.data(), 
-			D3D12_SHADER_VISIBILITY_PIXEL
-		);
-	}
+	// Descriptor range for accumulation UAV.
+	CD3DX12_DESCRIPTOR_RANGE accumulationUAVRange;
+	accumulationUAVRange.Init(
+		D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+		GlobalDescriptors::GetDescriptorCount(UAVAccumulationTexture),
+		RasterShaderRegisters::UAVRegisters::UAVDescriptorRange,
+		0,
+		GlobalDescriptors::GetDescriptorRelativeOffset(SRVGBuffers, UAVAccumulationTexture)
+	);
+
+	std::array<CD3DX12_DESCRIPTOR_RANGE, 3> UAVSRVTable = { { gBufferSRVRange, middleTextureSRVRange, accumulationUAVRange } };
+	rootParameters[DefaultRootParameterIdx::UAVSRVTableIdx].InitAsDescriptorTable(
+		(UINT)UAVSRVTable.size(), 
+		UAVSRVTable.data(), 
+		D3D12_SHADER_VISIBILITY_PIXEL
+	);
+	
 
 	// Static general sampler for all shaders.
 	CD3DX12_STATIC_SAMPLER_DESC staticSampler(0);
@@ -1086,7 +1100,6 @@ void DX12Renderer::CreateRenderInstances()
 		renderInstances.push_back(renderInstance);
 	}
 
-	// Cubes.
 	{
 		std::vector<RenderInstance>& renderInstances = m_renderInstancesByID[RenderObjectID::OBJModel1];
 
@@ -1102,11 +1115,23 @@ void DX12Renderer::CreateRenderInstances()
 
 		RenderInstance renderInstance = {};
 
+		renderInstance.CBIndex = renderInstanceCount++;
+		dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(0.0f, 0.0f, -5.0f));
+		renderInstances.push_back(renderInstance);	
+	}
+
+	// Raytracing render objects.
+	{
+		std::vector<RenderInstance>& rtRenderInstances = m_renderInstancesByID[RTRenderObjectID];
+
 		int offset = 2;
-		float scale = 3.0f;
-		
-		int maxZ = 3;
-		int maxYX = 5;
+		float scale = 8.0f;
+		int randomOffset = 5;
+		int halfRandomOffset = randomOffset / 2;
+
+		RenderInstance renderInstance = {};
+		int maxZ = 7;
+		int maxYX = 7;
 		for (int z = 0; z < maxZ; z++)
 		{
 			float zPos = (z - (maxZ / 2)) * scale;
@@ -1116,10 +1141,14 @@ void DX12Renderer::CreateRenderInstances()
 				for (int y = 0; y < maxYX; y++)
 				{
 					float yPos = (y - (maxYX / 2)) * scale;
-					
+
+					float zRandPos = zPos + ((rand() % randomOffset) - randomOffset);
+					float yRandPos = yPos + ((rand() % randomOffset) - randomOffset);
+					float xRandPos = xPos + ((rand() % randomOffset) - randomOffset);
+
 					renderInstance.CBIndex = renderInstanceCount++;
-					dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(xPos, yPos, zPos));
-					renderInstances.push_back(renderInstance);
+					dx::XMStoreFloat4x4(&renderInstance.instanceData.modelMatrix, dx::XMMatrixTranslation(xRandPos, yRandPos, zRandPos));
+					rtRenderInstances.push_back(renderInstance);
 				}
 			}
 		}
@@ -1457,7 +1486,7 @@ void DX12Renderer::CreateRayGenLocalRootSignature(ComPtr<ID3D12RootSignature>& r
 		// Add root descriptor for UAV that is going to be written to.
 		uavRange.Init(
 			D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 
-			GlobalDescriptors::GetDescriptorCount(SRVMiddleTexture), 
+			GlobalDescriptors::GetDescriptorCount(UAVMiddleTexture), 
 			RTShaderRegisters::UAVRegistersRayGen::UAVDescriptorRegister
 		);
 		rootParameters[RTRayGenParameterIdx::RayGenUAVTableIdx].InitAsDescriptorTable(1, &uavRange, D3D12_SHADER_VISIBILITY_ALL);
@@ -1670,7 +1699,11 @@ void FrameResource::UpdateFrameResources(const FrameResourceUpdateInputs inputs)
 {
 	UpdateInstanceConstantBuffers(inputs);
 	UpdateGlobalFrameDataBuffer(inputs);
-	UpdateTopLevelAccelerationStructure(inputs, RenderObjectID::Cube);
+
+	for (RenderObjectID objectID : sRTRenderObjectIDs)
+	{
+		UpdateTopLevelAccelerationStructure(inputs, objectID);
+	}
 }
 
 void FrameResource::CreateTopLevelASDescriptors(ComPtr<ID3D12Device5> device, ComPtr<ID3D12DescriptorHeap> cbvSrvUavHeap, UINT cbvSrvUavDescriptorSize)
@@ -1729,12 +1762,48 @@ void DX12Renderer::SerializeAndCreateRootSig(CD3DX12_ROOT_SIGNATURE_DESC rootSig
 	) >> CHK_HR;
 }
 
+CD3DX12_CPU_DESCRIPTOR_HANDLE DX12Renderer::GetGlobalRTVHandle(GlobalDescriptorNames globalRTVDescriptorName, UINT offset /*= 0*/)
+{
+	return GetGlobalHandleFromHeap(m_rtvHeapGlobal, m_rtvDescriptorSize, globalRTVDescriptorName, offset);
+}
+
+CD3DX12_CPU_DESCRIPTOR_HANDLE DX12Renderer::GetGlobalDSVHandle(GlobalDescriptorNames globalDSVDescriptorName, UINT offset /*= 0*/)
+{
+	return GetGlobalHandleFromHeap(m_dsvHeapGlobal, m_dsvDescriptorSize, globalDSVDescriptorName, offset);
+}
+
+CD3DX12_CPU_DESCRIPTOR_HANDLE DX12Renderer::GetGlobalCBVSRVUAVHandle(GlobalDescriptorNames globalUAVDescriptorName, UINT offset /*= 0*/)
+{
+	return GetGlobalHandleFromHeap(m_cbvSrvUavHeapGlobal, m_cbvSrvUavDescriptorSize, globalUAVDescriptorName, offset);
+}
+
+CD3DX12_CPU_DESCRIPTOR_HANDLE DX12Renderer::GetGlobalHandleFromHeap(ComPtr<ID3D12DescriptorHeap> heap, const UINT descriptorSize, const GlobalDescriptorNames globalDescriptorName, const UINT offset /*= 0*/)
+{
+	return CD3DX12_CPU_DESCRIPTOR_HANDLE(
+		heap->GetCPUDescriptorHandleForHeapStart(),
+		GlobalDescriptors::GetDescriptorOffset(globalDescriptorName) + offset,
+		descriptorSize
+	);
+}
+
 void DX12Renderer::UpdateCamera()
 {
 	// Update camera before rendering.
-	dx::XMVECTOR startPos = dx::XMVectorSet(0.0f, 0.0f, -13.0f, 1.0f);
-	//float angle = m_time * dx::XM_2PI / 20.0f;
-	float angle = 0.0f;
+	dx::XMVECTOR startPos = dx::XMVectorSet(11.0f, 16.0f, -35.0f, 1.0f);
+	float angle;
+
+	if (HasRenderPass(sRenderPassOrder, AccumulationPass))
+	{
+		angle = 0.0f;
+	}
+	else
+	{
+		angle = m_time * dx::XM_2PI / 20.0f;
+	}
+
+#if defined(TESTING) // Don't spin during testing, no matter what.
+	angle = 0.0f;
+#endif
 	
 	dx::XMMATRIX rotationMatrix = dx::XMMatrixRotationNormal(dx::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), angle);
 	dx::XMVECTOR newPos = dx::XMVector3Transform(startPos, rotationMatrix);
@@ -1764,25 +1833,13 @@ void DX12Renderer::BuildRenderPass(UINT context)
 		UINT currentFrameIndex = m_currentFrameResource->GetFrameIndex();
 
 		// Get RTV handle for the current back buffer.
-		const CD3DX12_CPU_DESCRIPTOR_HANDLE bbRTV(
-			m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
-			GlobalDescriptors::GetDescriptorOffset(RTVBackBuffers) + currentFrameIndex,
-			m_rtvDescriptorSize
-		);
+		const CD3DX12_CPU_DESCRIPTOR_HANDLE bbRTV = GetGlobalRTVHandle(GlobalDescriptorNames::RTVBackBuffers, currentFrameIndex);
 
-		const CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureRTV(
-			m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
-			GlobalDescriptors::GetDescriptorOffset(RTVMiddleTexture),
-			m_rtvDescriptorSize
-		);
+		const CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureRTV = GetGlobalRTVHandle(GlobalDescriptorNames::RTVMiddleTexture);
 
 		// Common args for all passes.
 		CommonRenderPassArgs commonArgs = {
-			.depthStencilView = CD3DX12_CPU_DESCRIPTOR_HANDLE(
-				m_dsvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
-				GlobalDescriptors::GetDescriptorOffset(DSVScene),
-				m_dsvDescriptorSize
-			),
+			.depthStencilView = GetGlobalDSVHandle(GlobalDescriptorNames::DSVScene),
 			.rootSignature = m_rasterRootSignature,
 			.viewport = m_viewport,
 			.scissorRect = m_scissorRect,
@@ -1853,11 +1910,7 @@ void DX12Renderer::BuildRenderPass(UINT context)
 				else if (renderPassType == DeferredGBufferPass)
 				{
 					// Get RTV handle for the first GBuffer.
-					const CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle(
-						m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
-						GlobalDescriptors::GetDescriptorOffset(RTVGBuffers),
-						m_rtvDescriptorSize
-					);
+					const CD3DX12_CPU_DESCRIPTOR_HANDLE firstGBufferRTVHandle = GetGlobalRTVHandle(GlobalDescriptorNames::RTVGBuffers);
 
 					renderPassArgs = DeferredGBufferRenderPassArgs{
 						.commonArgs = commonArgs,
@@ -2102,11 +2155,7 @@ void DX12Renderer::ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList)
 	for (UINT i = 0; i < GBufferIDCount; i++)
 	{
 		// Get RTV handle for GBuffer.
-		const CD3DX12_CPU_DESCRIPTOR_HANDLE gBufferRTVHandle(
-			m_rtvHeapGlobal->GetCPUDescriptorHandleForHeapStart(),
-			GlobalDescriptors::GetDescriptorOffset(RTVGBuffers) + i,
-			m_rtvDescriptorSize
-		);
+		const CD3DX12_CPU_DESCRIPTOR_HANDLE gBufferRTVHandle = GetGlobalRTVHandle(GlobalDescriptorNames::RTVGBuffers, i);
 
 		commandList->ClearRenderTargetView(gBufferRTVHandle, OptimizedClearColor, 0, nullptr);
 	}

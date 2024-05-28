@@ -89,8 +89,12 @@ public:
 	void Update();
 	void Render();
 
+	// Clears relevant buffers for each frame.
+	void ClearBuffers(GPUResource& currentBackBuffer, ComPtr<ID3D12GraphicsCommandList4> preCommandList, const CD3DX12_CPU_DESCRIPTOR_HANDLE bbRTV, const CD3DX12_CPU_DESCRIPTOR_HANDLE middleTextureRTV, CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle);
+
 private:
 
+	// Private constructor as this is a singleton. The Get() function is used to get the instance.
 	DX12Renderer(UINT width, UINT height, HWND windowHandle);
 	~DX12Renderer();
 
@@ -147,6 +151,12 @@ private:
 	RenderObject CreateRenderObject(const std::vector<Vertex>* vertices, const std::vector<VertexIndex>* indices, D3D12_PRIMITIVE_TOPOLOGY topology);
 	RenderObject CreateRenderObjectFromOBJ(const std::string& objPath, D3D12_PRIMITIVE_TOPOLOGY topology);
 	void SerializeAndCreateRootSig(CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc, ComPtr<ID3D12RootSignature>& rootSig);
+
+	CD3DX12_CPU_DESCRIPTOR_HANDLE GetGlobalRTVHandle(GlobalDescriptorNames globalRTVDescriptorName, UINT offset = 0);
+	CD3DX12_CPU_DESCRIPTOR_HANDLE GetGlobalDSVHandle(GlobalDescriptorNames globalDSVDescriptorName, UINT offset = 0);
+	CD3DX12_CPU_DESCRIPTOR_HANDLE GetGlobalCBVSRVUAVHandle(GlobalDescriptorNames globalUAVDescriptorName, UINT offset = 0);
+	CD3DX12_CPU_DESCRIPTOR_HANDLE GetGlobalHandleFromHeap(ComPtr<ID3D12DescriptorHeap> heap, const UINT descriptorSize, const GlobalDescriptorNames globalUAVDescriptorName, const UINT offset = 0);
+
 private:
 
 	UINT m_width;

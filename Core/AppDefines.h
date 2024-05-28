@@ -59,19 +59,8 @@ enum GBufferID : UINT
 constexpr std::array<DXGI_FORMAT, GBufferIDCount> GBufferFormats = { DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT };
 
 // The maximum number of instances that can be rendered in a single draw call.
-constexpr uint32_t MaxRenderInstances = 100u;
-constexpr uint32_t MaxRTInstancesPerTopLevel = 100u;
-
-constexpr uint32_t MaxRTVDescriptors = (20u) * BackBufferCount;
-// This should be below the sum of all the descriptors for this type of descriptor.
-constexpr uint32_t MaxCBVSRVUAVDescriptors = (MaxRenderInstances * 2) * BackBufferCount;
-
-// Macros to define indexing inside of offsets in descriptor heaps.
-#define DESCRIPTOR_COUNT(BaseName) BaseName##Count
-#define DESCRIPTOR_OFFSET(BaseName) BaseName##Offset
-#define FRAME_DESCRIPTOR_OFFSET(BaseName, FrameIndex) (DESCRIPTOR_OFFSET(BaseName) * BackBufferCount + DESCRIPTOR_COUNT(BaseName) * FrameIndex)
-
-
+constexpr uint32_t MaxRenderInstances = 1024u;
+constexpr uint32_t MaxRTInstancesPerTopLevel = MaxRenderInstances;
 
 
 // A enum with all unique global descriptor names.
@@ -203,7 +192,7 @@ enum FrameDescriptorNames
 
 namespace FrameDescriptors
 {
-	constexpr uint32_t MaxFrameCBVSRVUAVDescriptors = 256u;
+	constexpr uint32_t MaxFrameCBVSRVUAVDescriptors = MaxRenderInstances * 2;
 
 	enum CBVSRVUAVCounts : uint32_t
 	{
@@ -276,6 +265,10 @@ enum class RenderObjectID : uint32_t
 	Cube,
 	OBJModel1
 };
+
+// The program only supports one raytraced render object at the moment.
+// This is to ensure all parts of the program that uses it uses the same object.
+constexpr RenderObjectID RTRenderObjectID = RenderObjectID::OBJModel1;
 
 namespace RasterShaderRegisters {
 

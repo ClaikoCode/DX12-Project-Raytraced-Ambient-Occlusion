@@ -141,7 +141,7 @@ ComPtr<ID3D12GraphicsCommandList4> DX12RenderPass::GetFirstCommandList(UINT fram
 
 ComPtr<ID3D12GraphicsCommandList4> DX12RenderPass::GetLastCommandList(UINT frameIndex)
 {
-	return commandLists[frameIndex][commandLists.size() - 1];
+	return commandLists[frameIndex][NumContexts - 1];
 }
 
 void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
@@ -269,8 +269,7 @@ DeferredGBufferRenderPass::DeferredGBufferRenderPass(ComPtr<ID3D12Device5> devic
 {
 	// White list render objects.
 	{
-		//m_renderableObjects.push_back(RenderObjectID::OBJModel1);
-		m_renderableObjects.push_back(RenderObjectID::Cube);
+		m_renderableObjects.push_back(RTRenderObjectID);
 	}
 
 	struct PipelineStateStream
@@ -461,9 +460,9 @@ void DeferredLightingRenderPass::PerRenderInstance(const RenderInstance& renderI
 
 RaytracedAORenderPass::RaytracedAORenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
 	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_COMPUTE)
-{
-	// Only allow OBJ models for now.
-	m_renderableObjects.push_back(RenderObjectID::Cube);
+{	
+	// Add specifically allowed rt render object.
+	m_renderableObjects.push_back(RTRenderObjectID);
 }
 
 void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)

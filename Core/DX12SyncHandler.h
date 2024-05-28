@@ -10,6 +10,7 @@
 
 typedef std::array<HANDLE, NumContexts> SyncHandleArray;
 
+// Essentially a wrapper for an array but closes the handles when the object is destroyed.
 struct SyncHandles
 {
 	SyncHandles();
@@ -22,7 +23,7 @@ struct SyncHandles
 };
 
 // Contains sync handles for start and end sync as well as unique sync handles for each pass type.
-// Sync handles are stored as smart pointers to ensure that handles are properly copied and destroyed efficiently.
+// Sync handles are stored as smart pointers to ensure that handles are properly copied and destroyed.
 class DX12SyncHandler
 {
 public:
