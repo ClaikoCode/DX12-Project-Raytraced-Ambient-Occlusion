@@ -15,7 +15,7 @@
 #include "RenderPassIncludes.h"
 
 //#define SINGLE_THREAD // Remove to enable multi-threading.
-#define TESTING // Remove to have proper random seed.
+//#define TESTING // Remove to have proper random seed.
 
 using namespace DX12Abstractions;
 namespace dx = DirectX;
