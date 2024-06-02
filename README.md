@@ -10,4 +10,4 @@ Ambient Occlusion is a rendering technique that is used in nearly all 3D-rendere
 
 The project is opened using Visual Studio 2022 and is built using their internal CMake tool after it has finished configuring the project, which should happen automatically. After building the .exe file is created inside of the _out/_ folder, under the folder with the specified build mode (selected inside of Visual Studio), and is contained in the _Core/_ directory.
 
-**NOTE:** The project has only been tested to run in VS 2022. 
+**NOTE:** The project has only been tested to be built inside VS 2022.
