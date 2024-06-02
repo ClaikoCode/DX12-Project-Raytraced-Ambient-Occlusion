@@ -40,7 +40,7 @@ void SetCommonStates(CommonRenderPassArgs commonArgs, ComPtr<ID3D12PipelineState
 
 void DrawInstanceIndexed(UINT context, const std::vector<DrawArgs>& drawArgs, ComPtr<ID3D12GraphicsCommandList> commandList)
 {
-	for (UINT i = context; i < drawArgs.size(); i += NumContexts)
+	for (UINT i = 0; i < drawArgs.size(); i++)
 	{
 		const DrawArgs& drawArg = drawArgs[i];
 
@@ -160,10 +160,10 @@ void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackag
 			if (renderPackage.renderInstances)
 			{
 				const std::vector<RenderInstance>& renderInstances = *renderPackage.renderInstances;
-			
-				for (const RenderInstance& renderInstance : renderInstances)
+				
+				for (UINT i = context; i < drawArgs.size(); i += NumContexts)
 				{
-					PerRenderInstance(renderInstance, drawArgs, pipelineArgs, context, frameIndex);
+					PerRenderInstance(renderInstances[i], drawArgs, pipelineArgs, context, frameIndex);
 				}
 			}
 		}
@@ -344,9 +344,9 @@ void DeferredGBufferRenderPass::Render(const std::vector<RenderPackage>& renderP
 			{
 				const std::vector<RenderInstance>& renderInstances = *renderPackage.renderInstances;
 
-				for (const RenderInstance& renderInstance : renderInstances)
+				for (UINT i = context; i < renderInstances.size(); i += NumContexts)
 				{
-					PerRenderInstance(renderInstance, drawArgs, pipelineArgs, context, frameIndex);
+					PerRenderInstance(renderInstances[i], drawArgs, pipelineArgs, context, frameIndex);
 				}
 			}
 		}
