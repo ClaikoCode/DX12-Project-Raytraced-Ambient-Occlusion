@@ -14,7 +14,7 @@ DeferredLightingRenderPass::DeferredLightingRenderPass(ComPtr<ID3D12Device5> dev
 	} deferredLightingStateStream;
 
 	ComPtr<ID3DBlob> vsBlob;
-	D3DReadFileToBlob(L"../FSQVS.cso", &vsBlob) >> CHK_HR;
+	D3DReadFileToBlob(L"../FullScreenQuadVS.cso", &vsBlob) >> CHK_HR;
 
 	ComPtr<ID3DBlob> psBlob;
 	D3DReadFileToBlob(L"../DeferredLightingPS.cso", &psBlob) >> CHK_HR;

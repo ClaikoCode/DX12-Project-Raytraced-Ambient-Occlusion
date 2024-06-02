@@ -27,10 +27,10 @@ DeferredGBufferRenderPass::DeferredGBufferRenderPass(ComPtr<ID3D12Device5> devic
 	};
 
 	ComPtr<ID3DBlob> vsBlob;
-	D3DReadFileToBlob(L"../VertexShader.cso", &vsBlob) >> CHK_HR;
+	D3DReadFileToBlob(L"../DeferredRenderVS.cso", &vsBlob) >> CHK_HR;
 
 	ComPtr<ID3DBlob> psBlob;
-	D3DReadFileToBlob(L"../DeferredPixelShader.cso", &psBlob) >> CHK_HR;
+	D3DReadFileToBlob(L"../DeferredRenderPS.cso", &psBlob) >> CHK_HR;
 
 	pipelineStateStream.RootSignature = rootSig.Get();
 	pipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };

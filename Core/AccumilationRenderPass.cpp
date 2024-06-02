@@ -14,10 +14,10 @@ AccumilationRenderPass::AccumilationRenderPass(ComPtr<ID3D12Device5> device, Com
 	} accumilationPipelineStateStream;
 
 	ComPtr<ID3DBlob> vsBlob;
-	D3DReadFileToBlob(L"../FSQVS.cso", &vsBlob) >> CHK_HR;
+	D3DReadFileToBlob(L"../FullScreenQuadVS.cso", &vsBlob) >> CHK_HR;
 
 	ComPtr<ID3DBlob> psBlob;
-	D3DReadFileToBlob(L"../AccumilationPS.cso", &psBlob) >> CHK_HR;
+	D3DReadFileToBlob(L"../AccumulationPS.cso", &psBlob) >> CHK_HR;
 
 	accumilationPipelineStateStream.RootSignature = rootSig.Get();
 	accumilationPipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;

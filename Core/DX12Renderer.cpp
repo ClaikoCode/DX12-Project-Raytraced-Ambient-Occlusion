@@ -1319,7 +1319,7 @@ void DX12Renderer::CreateRaytracingPipelineState()
 		{ MissShaderName, nullptr, D3D12_EXPORT_FLAG_NONE }
 	} };
 	{
-		D3DReadFileToBlob(L"../RTShader.dxil", &rtShaderBlob) >> CHK_HR;
+		D3DReadFileToBlob(L"../RTAOShader.dxil", &rtShaderBlob) >> CHK_HR;
 		CD3DX12_SHADER_BYTECODE anyHitBytecode(rtShaderBlob.Get());
 
 		
