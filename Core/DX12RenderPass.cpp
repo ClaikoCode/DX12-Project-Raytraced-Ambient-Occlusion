@@ -69,8 +69,8 @@ void SetInstanceCB(CommonRenderPassArgs& args, const UINT frameIndex, const Rend
 	);
 }
 
-DX12RenderPass::DX12RenderPass(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE commandType) 
-	: m_pipelineState(nullptr), m_renderableObjects({})
+DX12RenderPass::DX12RenderPass(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE commandType, bool parallelizable) 
+	: m_pipelineState(nullptr), m_renderableObjects({}), m_parallelizable(parallelizable)
 {
 	for (UINT bb = 0; bb < commandLists.size(); bb++)
 	{
@@ -113,6 +113,11 @@ void DX12RenderPass::Close(UINT frameIndex, UINT context)
 	commandLists[frameIndex][context]->Close() >> CHK_HR;
 }
 
+bool DX12RenderPass::IsContextAllowedToBuild(const UINT context) const
+{
+	return m_parallelizable || context == 0;
+}
+
 const std::vector<RenderObjectID>& DX12RenderPass::GetRenderableObjects() const
 {
 	return m_renderableObjects;
@@ -133,11 +138,9 @@ ComPtr<ID3D12GraphicsCommandList4> DX12RenderPass::GetLastCommandList(UINT frame
 	return commandLists[frameIndex][NumContexts - 1];
 }
 
-void NonIndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
+void NonIndexedRenderPass::BuildRenderPass(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
-	// TODO: Handle this error better.
 	assert(pipelineArgs != nullptr);
-
 	NonIndexedRenderPassArgs& args = ToSpecificArgs<NonIndexedRenderPassArgs>(pipelineArgs);
 	
 	auto commandList = GetCommandList(context, frameIndex);
@@ -198,9 +201,8 @@ void NonIndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstanc
 	}
 }
 
-void IndexedRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
+void IndexedRenderPass::BuildRenderPass(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
-	// TODO: Handle this error better.
 	assert(pipelineArgs != nullptr);
 	IndexedRenderPassArgs& args = *reinterpret_cast<IndexedRenderPassArgs*>(pipelineArgs);
 
@@ -254,7 +256,7 @@ void IndexedRenderPass::PerRenderInstance(const RenderInstance& renderInstance, 
 }
 
 DeferredGBufferRenderPass::DeferredGBufferRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
-	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_DIRECT)
+	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_DIRECT, true)
 {
 	// White list render objects.
 	{
@@ -316,9 +318,8 @@ DeferredGBufferRenderPass::DeferredGBufferRenderPass(ComPtr<ID3D12Device5> devic
 	NAME_D3D12_OBJECT_MEMBER(m_pipelineState, DeferredGBufferRenderPass);
 }
 
-void DeferredGBufferRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
+void DeferredGBufferRenderPass::BuildRenderPass(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
-	// TODO: Handle this error better.
 	assert(pipelineArgs != nullptr);
 	DeferredGBufferRenderPassArgs& args = ToSpecificArgs<DeferredGBufferRenderPassArgs>(pipelineArgs);
 
@@ -373,7 +374,7 @@ void DeferredGBufferRenderPass::PerRenderInstance(const RenderInstance& renderIn
 
 
 DeferredLightingRenderPass::DeferredLightingRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
-	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_DIRECT)
+	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_DIRECT, false)
 {
 	struct DeferredLightingStateStream
 	{
@@ -408,11 +409,8 @@ DeferredLightingRenderPass::DeferredLightingRenderPass(ComPtr<ID3D12Device5> dev
 	NAME_D3D12_OBJECT_MEMBER(m_pipelineState, DeferredLightingStateStream);
 }
 
-void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
+void DeferredLightingRenderPass::BuildRenderPass(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
-	if (context != 0)
-		return;
-
 	assert(pipelineArgs != nullptr);
 	DeferredLightingRenderPassArgs& args = ToSpecificArgs<DeferredLightingRenderPassArgs>(pipelineArgs);
 
@@ -444,19 +442,14 @@ void DeferredLightingRenderPass::PerRenderInstance(const RenderInstance& renderI
 }
 
 RaytracedAORenderPass::RaytracedAORenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
-	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_COMPUTE)
+	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_COMPUTE, false)
 {	
 	// Add specifically allowed rt render object.
 	m_renderableObjects.push_back(RTRenderObjectID);
 }
 
-void RaytracedAORenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
+void RaytracedAORenderPass::BuildRenderPass(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
-	// TODO: This feels like a hack. 
-	// Maybe there is a more official way to handle this (single thread flag?).
-	if (context != 0)  
-		return;
-
 	assert(pipelineArgs != nullptr);
 	const RaytracedAORenderPassArgs& args = ToSpecificArgs<RaytracedAORenderPassArgs>(pipelineArgs);
 
@@ -544,7 +537,7 @@ void RaytracedAORenderPass::PerRenderInstance(const RenderInstance& renderInstan
 }
 
 AccumilationRenderPass::AccumilationRenderPass(ComPtr<ID3D12Device5> device, ComPtr<ID3D12RootSignature> rootSig) 
-	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_DIRECT)
+	: DX12RenderPass(device, D3D12_COMMAND_LIST_TYPE_DIRECT, false)
 {
 	struct AccumilationPipelineStateStream
 	{
@@ -579,11 +572,8 @@ AccumilationRenderPass::AccumilationRenderPass(ComPtr<ID3D12Device5> device, Com
 	NAME_D3D12_OBJECT_MEMBER(m_pipelineState, AccumilationRenderPass);
 }
 
-void AccumilationRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
+void AccumilationRenderPass::BuildRenderPass(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
-	if (context != 0)
-		return;
-
 	assert(pipelineArgs != nullptr);
 	const AccumulationRenderPassArgs& args = ToSpecificArgs<AccumulationRenderPassArgs>(pipelineArgs);
 

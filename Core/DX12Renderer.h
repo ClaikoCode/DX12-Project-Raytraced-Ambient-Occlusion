@@ -54,19 +54,24 @@ public:
 	UINT64 GetCompletedFenceValue();
 
 	void ResetAllocator();
-	// Assumes that the command list used is a command list previously created by this class.
+	// Assumes that the command list used is a command list previously created by this object.
 	void ResetCommandList(ComPtr<ID3D12GraphicsCommandList1> commandList);
 
+	// Creates a signal on the command queue and returns the fence value that will be signaled.
 	UINT64 Signal();
-	// If nullptr is passed, the function will wait indefinitely.
+	// Waits for the latest signal value to be reached.
 	void WaitForLatestSignal();
-	void WaitForFence(UINT64 fenceValue);
-	// If nullptr is passed, the function will wait indefinitely.
+	// Waits for the given fence value to be reached.
+	void WaitForFenceValue(UINT64 fenceValue);
 	void SignalAndWait();
 
+	// GPU sided wait for the given fence to reach the fence value.
 	void GPUWait(ComPtr<ID3D12Fence> fence, UINT64 fenceValue);
+	// A GPU wait for another queue.
 	void GPUWaitForOtherQueue(CommandQueueHandler& otherQueue);
 
+	// Execute the given command lists with optional count and offset.
+	// If zero is passed as count, the function will execute all command lists in the vector.
 	void ExecuteCommandLists(DX12Abstractions::CommandListVector& commandLists, UINT count = 0, const UINT offset = 0);
 
 private:
@@ -143,7 +148,7 @@ private:
 
 	void UpdateCamera();
 
-	void BuildRenderPass(UINT context);
+	void BuildRenderPipeline(UINT context);
 
 	void ClearGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList);
 	void TransitionGBuffers(ComPtr<ID3D12GraphicsCommandList> commandList, D3D12_RESOURCE_STATES newResourceState);
