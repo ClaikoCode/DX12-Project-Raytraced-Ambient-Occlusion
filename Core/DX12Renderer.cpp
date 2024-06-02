@@ -109,7 +109,7 @@ CD3DX12_RESOURCE_DESC CreateBackbufferResourceDesc(const UINT width, const UINT 
 		width,
 		height
 	);
-	resourceDesc.MipLevels = 1; // Match back buffer.
+	resourceDesc.MipLevels = 1;
 
 	return resourceDesc;
 }
@@ -147,7 +147,7 @@ DX12Renderer& DX12Renderer::Get()
 
 void DX12Renderer::Update()
 {
-	m_time += 1 / 60.0f;
+	m_time += 1 / 60.0f; // Assumed 60 fps.
 
 	UINT currentBackBufferIndex = m_swapChain->GetCurrentBackBufferIndex();
 	m_currentFrameResource = m_frameResources[currentBackBufferIndex].get();
@@ -2067,14 +2067,14 @@ void FrameResource::UpdateTopLevelAccelerationStructure(const FrameResourceUpdat
 {
 	AccelerationStructureBuffers& topAccStruct = topAccStructByID[objectID];
 	const D3D12_GPU_VIRTUAL_ADDRESS bottomLevelAddress = inputs.bottomAccStructByID.at(objectID).result.resource->GetGPUVirtualAddress();
-	const UINT instanceCount = (UINT)inputs.renderInstancesByID.at(objectID).size();
+	const std::vector<RenderInstance>& renderInstances = inputs.renderInstancesByID.at(objectID);
 
 	D3D12_RAYTRACING_INSTANCE_DESC* instanceDesc = nullptr;
 	topAccStruct.instanceDesc.resource->Map(0, nullptr, reinterpret_cast<void**>(&instanceDesc)) >> CHK_HR;
 
-	for (UINT i = 0; i < instanceCount; i++)
+	for (UINT i = 0; i < renderInstances.size(); i++)
 	{
-		const RenderInstance& renderInstance = inputs.renderInstancesByID.at(objectID)[i];
+		const RenderInstance& renderInstance = renderInstances[i];
 		instanceDesc->InstanceID = i;
 		instanceDesc->InstanceContributionToHitGroupIndex = 0;
 		instanceDesc->Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
