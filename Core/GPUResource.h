@@ -4,7 +4,6 @@
 #include <vector>
 
 #include "DirectXIncludes.h"
-#include "GraphicsErrorHandling.h"
 
 using Microsoft::WRL::ComPtr;
 

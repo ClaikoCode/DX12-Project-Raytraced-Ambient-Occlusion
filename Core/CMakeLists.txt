@@ -3,7 +3,7 @@ file(GLOB Core_SRC
 	"*.h"
 	"*.cpp"
 )
-add_executable(Core WIN32 "Main.cpp" "Window.cpp" "App.cpp" "DirectXIncludes.h" "GraphicsErrorHandling.cpp" "DX12Renderer.cpp" "DX12Renderer.h" "GPUResource.cpp" "GPUResource.h" "DX12AbstractionUtils.h" "DX12AbstractionUtils.cpp" "DX12SyncHandler.h" "DX12SyncHandler.cpp" "DX12RenderPass.h" "DX12RenderPass.cpp" "AppDefines.h" "RenderObject.h" "RenderObject.cpp" "Camera.h" "Camera.cpp" "RenderPassArgs.h" "DXRAbstractions.h")
+add_executable(Core WIN32 "Main.cpp" "Window.cpp" "App.cpp" "DirectXIncludes.h" "GraphicsErrorHandling.cpp" "DX12Renderer.cpp" "DX12Renderer.h" "GPUResource.cpp" "GPUResource.h" "DX12AbstractionUtils.h" "DX12AbstractionUtils.cpp" "DX12SyncHandler.h" "DX12SyncHandler.cpp" "DX12RenderPass.h" "DX12RenderPass.cpp" "AppDefines.h" "RenderObject.h" "RenderObject.cpp" "Camera.h" "Camera.cpp" "RenderPassArgs.h" "DXRAbstractions.h" "NonIndexedRenderPass.h" "NonIndexedRenderPass.cpp" "IndexedRenderPass.h" "IndexedRenderPass.cpp" "RenderPassIncludes.h" "DeferredGBufferRenderPass.h" "DeferredGBufferRenderPass.cpp" "DeferredLightingRenderPass.h" "DeferredLightingRenderPass.cpp" "RaytracedAORenderPass.h" "RaytracedAORenderPass.cpp" "AccumilationRenderPass.h" "AccumilationRenderPass.cpp")
 
 # Set debug directory to the same as the output directory for MSVC compilers.
 set_property(TARGET Core PROPERTY VS_DEBUGGER_WORKING_DIRECTORY ${CMAKE_BINARY_DIR})

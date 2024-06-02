@@ -5,3 +5,7 @@
 #include "directx/d3dx12.h" // Requires libraries: d3d12.lib dxcore.lib
 #include <d3dcompiler.h> // Requires library linking to d3dcompiler.lib
 #include <DirectXMath.h>
+
+// Project headers.
+#include "GraphicsErrorHandling.h"
+#include "DX12AbstractionUtils.h"

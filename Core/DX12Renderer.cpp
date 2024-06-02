@@ -12,6 +12,8 @@
 #include "AppDefines.h"
 #include "tiny_obj_loader.h"
 
+#include "RenderPassIncludes.h"
+
 //#define SINGLE_THREAD
 #define TESTING
 
