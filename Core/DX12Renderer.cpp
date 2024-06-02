@@ -409,7 +409,7 @@ void DX12Renderer::InitPipeline()
 
 void DX12Renderer::CreateDeviceAndSwapChain()
 {
-	ComPtr<IDXGIFactory4> factory;
+	ComPtr<IDXGIFactory6> factory;
 	{
 		UINT dxgiFactoryFlags = 0;
 
@@ -427,25 +427,25 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 		CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)) >> CHK_HR;
 	}
 
-	ComPtr<IDXGIAdapter1> hardwareAdapter;
+	ComPtr<IDXGIAdapter1> hardwareAdapter = nullptr;
 	D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_12_0;
 	{
-		ComPtr<IDXGIAdapter1> adapter;
-		for (UINT adapterIndex = 0; DXGI_ERROR_NOT_FOUND != factory->EnumAdapters1(adapterIndex, &adapter); ++adapterIndex)
+		ComPtr<IDXGIAdapter1> adapter = nullptr;
+		UINT adapterIndex = 0;
+		while(SUCCEEDED(factory->EnumAdapters1(adapterIndex++, &adapter)))
 		{
-			DXGI_ADAPTER_DESC1 desc;
-			adapter->GetDesc1(&desc) >> CHK_HR;
-
-			if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
-			{
-				// Don't select the Basic Render Driver adapter.
-				continue;
-			}
-
 			// Check to see if the adapter supports the feature level, but don't create the actual device yet.
-			if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), featureLevel, _uuidof(ID3D12Device5), nullptr)))
+			ComPtr<ID3D12Device> featureCheckDevice;
+			if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), featureLevel, IID_PPV_ARGS(&featureCheckDevice))))
 			{
-				break;
+				D3D12_FEATURE_DATA_D3D12_OPTIONS5 featureSupportData = {};
+				if (SUCCEEDED(featureCheckDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &featureSupportData, sizeof(featureSupportData))))
+				{
+					if (featureSupportData.RaytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED)
+					{
+						break; // adapter was found that supports ray tracing.
+					}
+				}
 			}
 		}
 
@@ -455,15 +455,11 @@ void DX12Renderer::CreateDeviceAndSwapChain()
 	if (hardwareAdapter)
 	{
 		// Create the device.
-		D3D12CreateDevice(nullptr, featureLevel, IID_PPV_ARGS(&m_device)) >> CHK_HR;
+		D3D12CreateDevice(hardwareAdapter.Get(), featureLevel, IID_PPV_ARGS(&m_device)) >> CHK_HR;
 	}
 	else
 	{
-		// If no adapter could be found, create WARP device.
-		ComPtr<IDXGIAdapter> warpAdapter;
-		factory->EnumWarpAdapter(IID_PPV_ARGS(&warpAdapter)) >> CHK_HR;
-
-		D3D12CreateDevice(warpAdapter.Get(), featureLevel, IID_PPV_ARGS(&m_device)) >> CHK_HR;
+		throw std::runtime_error("ERROR: No adapter that supports DXR was found.");
 	}
 
 	NAME_D3D12_OBJECT_MEMBER(m_device, DX12Renderer);
