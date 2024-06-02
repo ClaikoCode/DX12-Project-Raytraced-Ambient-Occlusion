@@ -14,8 +14,8 @@
 
 #include "RenderPassIncludes.h"
 
-//#define SINGLE_THREAD
-#define TESTING
+//#define SINGLE_THREAD // Remove to enable multi-threading.
+#define TESTING // Remove to have proper random seed.
 
 using namespace DX12Abstractions;
 namespace dx = DirectX;
@@ -288,7 +288,7 @@ void DX12Renderer::Render()
 	}
 
 	// Present
-	m_swapChain->Present(0, 0) >> CHK_HR;
+	m_swapChain->Present(1, 0) >> CHK_HR;
 
 	// Signal end of frame.
 	UINT64 fenceVal = m_directCommandQueue->Signal();

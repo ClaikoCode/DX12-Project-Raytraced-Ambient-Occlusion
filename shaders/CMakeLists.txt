@@ -3,8 +3,8 @@
 add_custom_target(Shaders)
 
 # Set shader files
-set(HLSL_VERTEX_SHADERS VertexShader.hlsl FSQVS.hlsl)
-set(HLSL_PIXEL_SHADERS PixelShader.hlsl DeferredPixelShader.hlsl DeferredLightingPS.hlsl AccumilationPS.hlsl)
+set(HLSL_VERTEX_SHADERS DeferredRenderVS.hlsl FullScreenQuadVS.hlsl)
+set(HLSL_PIXEL_SHADERS DeferredRenderPS.hlsl DeferredLightingPS.hlsl AccumulationPS.hlsl)
 
 
 # Set shader type properties
@@ -33,7 +33,7 @@ foreach(FILE ${HLSL_SHADER_FILES})
 endforeach(FILE)
 
 
-set(HLSL_RAYTRACING_SHADERS RTShader.hlsl)
+set(HLSL_RAYTRACING_SHADERS RTAOShader.hlsl)
 
 set_source_files_properties(${HLSL_RAYTRACING_SHADERS} PROPERTIES ShaderModel "6_3")
 
