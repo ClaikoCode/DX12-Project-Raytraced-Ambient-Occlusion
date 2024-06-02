@@ -70,7 +70,7 @@ void SetInstanceCB(CommonRenderPassArgs& args, const UINT frameIndex, const Rend
 }
 
 DX12RenderPass::DX12RenderPass(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_TYPE commandType) 
-	: m_pipelineState(nullptr), m_renderableObjects({}), m_enabled(true)
+	: m_pipelineState(nullptr), m_renderableObjects({})
 {
 	for (UINT bb = 0; bb < commandLists.size(); bb++)
 	{
@@ -81,6 +81,8 @@ DX12RenderPass::DX12RenderPass(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_
 				IID_PPV_ARGS(&commandAllocators[bb][i])
 			) >> CHK_HR;
 
+			NAME_D3D12_OBJECT_MEMBER_INDEXED(commandAllocators[bb], i, DX12RenderPass);
+
 			device->CreateCommandList(
 				0,
 				commandType,
@@ -90,6 +92,8 @@ DX12RenderPass::DX12RenderPass(ComPtr<ID3D12Device5> device, D3D12_COMMAND_LIST_
 			) >> CHK_HR;
 
 			commandLists[bb][i]->Close() >> CHK_HR;
+
+			NAME_D3D12_OBJECT_MEMBER_INDEXED(commandLists[bb], i, DX12RenderPass);
 		}
 	}
 }
@@ -112,21 +116,6 @@ void DX12RenderPass::Close(UINT frameIndex, UINT context)
 const std::vector<RenderObjectID>& DX12RenderPass::GetRenderableObjects() const
 {
 	return m_renderableObjects;
-}
-
-void DX12RenderPass::Enable()
-{
-	m_enabled = true;
-}
-
-void DX12RenderPass::Disable()
-{
-	m_enabled = false;
-}
-
-bool DX12RenderPass::IsEnabled()
-{
-	return m_enabled;
 }
 
 ComPtr<ID3D12GraphicsCommandList4> DX12RenderPass::GetCommandList(UINT context, UINT frameIndex)
@@ -389,18 +378,12 @@ DeferredLightingRenderPass::DeferredLightingRenderPass(ComPtr<ID3D12Device5> dev
 	struct DeferredLightingStateStream
 	{
 		CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE RootSignature;
-		CD3DX12_PIPELINE_STATE_STREAM_INPUT_LAYOUT InputLayout;
 		CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimtiveTopology;
 		CD3DX12_PIPELINE_STATE_STREAM_VS VS;
 		CD3DX12_PIPELINE_STATE_STREAM_PS PS;
 		CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
 		CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
 	} deferredLightingStateStream;
-
-	// TODO: Check if this is even needed. No actual data for input is used as this is a FSQ drawn from the VS.
-	const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
-		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-	};
 
 	ComPtr<ID3DBlob> vsBlob;
 	D3DReadFileToBlob(L"../FSQVS.cso", &vsBlob) >> CHK_HR;
@@ -409,7 +392,6 @@ DeferredLightingRenderPass::DeferredLightingRenderPass(ComPtr<ID3D12Device5> dev
 	D3DReadFileToBlob(L"../DeferredLightingPS.cso", &psBlob) >> CHK_HR;
 
 	deferredLightingStateStream.RootSignature = rootSig.Get();
-	deferredLightingStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
 	deferredLightingStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 	deferredLightingStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
 	deferredLightingStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
@@ -428,6 +410,9 @@ DeferredLightingRenderPass::DeferredLightingRenderPass(ComPtr<ID3D12Device5> dev
 
 void DeferredLightingRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
+	if (context != 0)
+		return;
+
 	assert(pipelineArgs != nullptr);
 	DeferredLightingRenderPassArgs& args = ToSpecificArgs<DeferredLightingRenderPassArgs>(pipelineArgs);
 
@@ -564,18 +549,12 @@ AccumilationRenderPass::AccumilationRenderPass(ComPtr<ID3D12Device5> device, Com
 	struct AccumilationPipelineStateStream
 	{
 		CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE RootSignature;
-		CD3DX12_PIPELINE_STATE_STREAM_INPUT_LAYOUT InputLayout;
 		CD3DX12_PIPELINE_STATE_STREAM_PRIMITIVE_TOPOLOGY PrimtiveTopology;
 		CD3DX12_PIPELINE_STATE_STREAM_VS VS;
 		CD3DX12_PIPELINE_STATE_STREAM_PS PS;
 		CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
 		CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT DSVFormat;
 	} accumilationPipelineStateStream;
-
-	// TODO: Check if this is even needed. No actual data for input is used as this is a FSQ drawn from the VS.
-	const D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
-		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-	};
 
 	ComPtr<ID3DBlob> vsBlob;
 	D3DReadFileToBlob(L"../FSQVS.cso", &vsBlob) >> CHK_HR;
@@ -584,7 +563,6 @@ AccumilationRenderPass::AccumilationRenderPass(ComPtr<ID3D12Device5> device, Com
 	D3DReadFileToBlob(L"../AccumilationPS.cso", &psBlob) >> CHK_HR;
 
 	accumilationPipelineStateStream.RootSignature = rootSig.Get();
-	accumilationPipelineStateStream.InputLayout = { inputLayout, (UINT)std::size(inputLayout) };
 	accumilationPipelineStateStream.PrimtiveTopology = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 	accumilationPipelineStateStream.VS = CD3DX12_SHADER_BYTECODE(vsBlob.Get());
 	accumilationPipelineStateStream.PS = CD3DX12_SHADER_BYTECODE(psBlob.Get());
@@ -603,6 +581,9 @@ AccumilationRenderPass::AccumilationRenderPass(ComPtr<ID3D12Device5> device, Com
 
 void AccumilationRenderPass::Render(const std::vector<RenderPackage>& renderPackages, UINT context, UINT frameIndex, RenderPassArgs* pipelineArgs)
 {
+	if (context != 0)
+		return;
+
 	assert(pipelineArgs != nullptr);
 	const AccumulationRenderPassArgs& args = ToSpecificArgs<AccumulationRenderPassArgs>(pipelineArgs);
 

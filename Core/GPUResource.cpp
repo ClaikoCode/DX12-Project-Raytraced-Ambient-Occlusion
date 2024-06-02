@@ -34,7 +34,7 @@ namespace DX12Abstractions
 			return;
 		}
 
-		const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+		auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
 			resource.Get(),
 			currentState,
 			newState
@@ -81,8 +81,6 @@ namespace DX12Abstractions
 			nullptr,
 			IID_PPV_ARGS(&resource)
 		) >> CHK_HR;
-
-		NAME_D3D12_OBJECT_MEMBER(resource, GPUResource);
 
 		return resource;
 	}

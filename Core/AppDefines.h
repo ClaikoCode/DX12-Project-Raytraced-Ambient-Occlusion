@@ -17,7 +17,7 @@ constexpr const char* AssetsPath = "../../../../assets/";
 constexpr uint32_t NumContexts = 2u;
 
 // How many back back buffers the program uses.
-constexpr UINT BackBufferCount = 2;
+constexpr UINT BackBufferCount = 2u;
 constexpr FLOAT OptimizedClearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 // Reference to the back buffer format.

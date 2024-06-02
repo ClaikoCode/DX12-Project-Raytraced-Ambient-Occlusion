@@ -22,7 +22,7 @@ ConstantBuffer<GlobalData> globalData : register(b0);
 #define AO_IS_ILLUMINATED_VAL 1.0f
 #define AO_MIN_T 0.0001f
 #define AO_RADIUS 100000.0f
-#define NUM_SAMPLES 128u
+#define NUM_SAMPLES 1u
 
 // The four functions below (initRand, nextRand, and getPerpendicularVector, getCosHemisphereSample) were taken from the codebase 
 // of a tutorial on simple raytracing techniques.

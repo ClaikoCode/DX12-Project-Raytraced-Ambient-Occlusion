@@ -257,10 +257,7 @@ void DX12Renderer::Render()
 		const auto& renderPassPtr = m_renderPasses[renderPass];
 		for (UINT context = 0; context < NumContexts; context++)
 		{
-			if (renderPassPtr->IsEnabled())
-			{
-				combinedCommandLists.push_back(renderPassPtr->GetCommandList(context, currentFrameIndex));
-			}
+			combinedCommandLists.push_back(renderPassPtr->GetCommandList(context, currentFrameIndex));
 		}
 	}
 
@@ -274,6 +271,11 @@ void DX12Renderer::Render()
 	}
 	else
 	{
+		//for(UINT i = 0; i < rtCommandListIndex; i++)
+		//{
+		//	m_directCommandQueue->ExecuteCommandLists(combinedCommandLists, 1, i);
+		//}
+
 		// Execute all command lists up to the ray tracing pass.
 		m_directCommandQueue->ExecuteCommandLists(combinedCommandLists, rtCommandListIndex);
 
@@ -580,6 +582,8 @@ void DX12Renderer::CreateMiddleTexture()
 		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
 		D3D12_HEAP_TYPE_DEFAULT
 	);
+
+	NAME_D3D12_OBJECT_MEMBER(m_middleTexture, DX12Renderer);
 }
 
 void FrameResource::CreateTopLevelASs(ComPtr<ID3D12Device5> device)
@@ -606,6 +610,8 @@ void DX12Renderer::CreateAccumulationTexture()
 		D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
 		D3D12_HEAP_TYPE_DEFAULT
 	);
+
+	NAME_D3D12_OBJECT_MEMBER(m_accumulationTexture, DX12Renderer);
 }
 
 void DX12Renderer::CreateBackBuffers()
@@ -716,7 +722,7 @@ void DX12Renderer::CreateDSVHeap()
 {
 	const D3D12_DESCRIPTOR_HEAP_DESC dsvDescriptorHeapDesc = {
 			.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
-			.NumDescriptors = BackBufferCount, // TODONOW: Make this proper count and future offsets.
+			.NumDescriptors = GlobalDescriptors::MaxGlobalDSVDescriptors,
 			.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
 			.NodeMask = 0
 	};
@@ -1228,6 +1234,8 @@ void DX12Renderer::CreateBottomLevelAccelerationStructure(RenderObjectID objectI
 			D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
 			D3D12_HEAP_TYPE_DEFAULT
 		);
+
+		NAME_D3D12_OBJECT_MEMBER(bottomLevelAccStruct.scratch, DX12Renderer);
 	}
 
 	// Create result resource.
@@ -1243,6 +1251,8 @@ void DX12Renderer::CreateBottomLevelAccelerationStructure(RenderObjectID objectI
 			D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
 			D3D12_HEAP_TYPE_DEFAULT
 		);
+
+		NAME_D3D12_OBJECT_MEMBER(bottomLevelAccStruct.result, DX12Renderer);
 	}
 
 	// Create the bottom-level AS
@@ -1275,6 +1285,8 @@ void FrameResource::CreateTopLevelAS(ComPtr<ID3D12Device5> device, RenderObjectI
 		D3D12_HEAP_TYPE_DEFAULT
 	);
 
+	NAME_D3D12_OBJECT_MEMBER(topAccStruct.scratch, FrameResource);
+
 	resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(info.ResultDataMaxSizeInBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 	topAccStruct.result = CreateResource(
 		device,
@@ -1282,6 +1294,8 @@ void FrameResource::CreateTopLevelAS(ComPtr<ID3D12Device5> device, RenderObjectI
 		D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
 		D3D12_HEAP_TYPE_DEFAULT
 	);
+
+	NAME_D3D12_OBJECT_MEMBER(topAccStruct.result, FrameResource);
 
 	resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * inputs.NumDescs);
 	topAccStruct.instanceDesc = CreateUploadResource(device, resourceDesc);
@@ -1409,7 +1423,6 @@ void DX12Renderer::CreateRaytracingPipelineState()
 	D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION shaderConfigAssociation;
 	std::array<LPCWSTR, 3> shaderNamesForConfig = { MissShaderName, AnyHitShaderName, RayGenShaderName };
 	{
-		// TODO: Make this match shader.
 		shaderConfig.MaxAttributeSizeInBytes = sizeof(float) * 2;
 		shaderConfig.MaxPayloadSizeInBytes = sizeof(float) * 1;
 
@@ -1418,8 +1431,7 @@ void DX12Renderer::CreateRaytracingPipelineState()
 		soShaderConfig->pDesc = &shaderConfig;
 		
 		//Bind the payload size to the programs
-		{
-			// TODO: Check if it needs to be const pointers inside of array.	
+		{	
 			shaderConfigAssociation.pExports = shaderNamesForConfig.data();
 			shaderConfigAssociation.NumExports = (UINT)shaderNamesForConfig.size();
 			shaderConfigAssociation.pSubobjectToAssociate = soShaderConfig;
@@ -1825,10 +1837,12 @@ void DX12Renderer::BuildRenderPass(UINT context)
 		// Wait for start sync.
 		m_syncHandler.WaitStart(context);
 
+#if !defined(SINGLE_THREAD)
 		if (m_forceExitThread)
 		{
 			break;
 		}
+#endif
 
 		UINT currentFrameIndex = m_currentFrameResource->GetFrameIndex();
 
@@ -1888,8 +1902,7 @@ void DX12Renderer::BuildRenderPass(UINT context)
 
 			// Only try to render if there actually is anything to render.
 			// If the render pass does not have any objects at all then it is assumed it doesn't need them to fulfill its task.
-			// Dont render if its disabled.
-			if ((renderPackages.size() > 0 || passObjectIDs.size() == 0) && renderPass.IsEnabled())
+			if ((renderPackages.size() > 0 || passObjectIDs.size() == 0))
 			{
 				RenderPassArgs renderPassArgs;
 
@@ -1933,12 +1946,6 @@ void DX12Renderer::BuildRenderPass(UINT context)
 
 						// Resource barrier for g buffers.
 						TransitionGBuffers(commandList, gBufferResourceState);
-
-						// If this is the last render pass we make the middle texture as final output instead.
-						if (isLastRenderPass)
-						{
-							m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_RENDER_TARGET, commandList);
-						}	
 					}
 
 					renderPassArgs = DeferredLightingRenderPassArgs{
@@ -2016,14 +2023,6 @@ void DX12Renderer::BuildRenderPass(UINT context)
 
 			// Signal that pass is done.
 			m_syncHandler.SetPass(context, renderPassType);
-
-			// TODO: This is super janky and should be fixed. 
-			// Find some way to solve the fact that a compute command list cant take a resource out of render target state.
-			if (!isLastRenderPass && sRenderPassOrder[passIndex + 1] == RaytracedAOPass)
-			{
-				auto lastCommandList = renderPass.GetLastCommandList(currentFrameIndex);
-				m_middleTexture.TransitionTo(D3D12_RESOURCE_STATE_UNORDERED_ACCESS, lastCommandList);
-			}
 			
 			m_renderPasses[renderPassType]->Close(currentFrameIndex, context);
 		}
@@ -2085,7 +2084,7 @@ void FrameResource::UpdateTopLevelAccelerationStructure(const FrameResourceUpdat
 		memcpy(instanceDesc->Transform, &transfM, sizeof(instanceDesc->Transform));
 
 		instanceDesc->AccelerationStructure = bottomLevelAddress;
-		instanceDesc->InstanceMask = 0xFF; // TODO: Check if this is even needed?
+		instanceDesc->InstanceMask = 0xFF;
 
 		instanceDesc++;
 	}
