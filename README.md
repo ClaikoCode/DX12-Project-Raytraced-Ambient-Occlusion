@@ -1,10 +1,17 @@
 # DX12 Project - Raytraced Ambient Occlusion
 
-This repository contains a DX12 project, developed for the course **DV2551 3D-Programming III** at Blekinge Institute of Technology (BTH). 
+This repository contains a DX12 project, developed for the course **DV2551 3D-Programming III** at Blekinge Institute of Technology (BTH). The course gave students free range to implement any graphical technique that utilizes the newer features of modern graphics APIs.
 
 I chose to implement Raytraced Ambient Occlusion (RTAO) with Temporal Accumulative Denoising for the project.
 
-Ambient occlusion is a rendering technique that is used in nearly all 3D-rendered games created today and aims to produce highly detailed shadows that come from occluding global (ambient) light. **More info later**.
+Ambient occlusion is a rendering technique that is used in nearly all 3D-rendered games created today and aims to produce highly detailed shadows that come from occluding global (ambient) light. Personally, I've been insipired by several ray tracing techniques because of how much they can improve the quality of a render in real time. Ambient occlusion is also a problem that lends itself well to ray tracing solutions and produces visually appealing results without depending much on other complex systems. For these reasons, I felt that it was a perfect choice to build my project around.
+
+## Results
+
+The image below is taken from a presentation explaining how I implemented the technique.
+
+![image](https://github.com/user-attachments/assets/3eb7945d-029c-471b-8866-899ac88e3d82)
+
 
 ## How To Build
 
